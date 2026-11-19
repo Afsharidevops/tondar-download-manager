@@ -24,7 +24,7 @@ Recommends: ffmpeg, python3-socks, xdg-user-dirs
 Suggests: nodejs
 Installed-Size: {{size}}
 Maintainer: Tondar DM <tondar@localhost>
-Homepage: https://github.com/
+Homepage: https://github.com/Afsharidevops/tondar-download-manager
 Description: {APP_NAME} - segmented download accelerator
  Download manager with up to 32 connections per file and dynamic
  segmentation, pause/resume, queue and scheduler, speed limiter,

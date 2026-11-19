@@ -81,7 +81,9 @@ class DownloadManager(QtCore.QObject):
         def work():
             try:
                 if media:
-                    info = probe_media(url, self.settings)
+                    h = headers or {}
+                    info = probe_media(url, self.settings, referer=h.get("Referer", ""),
+                                       cookies=h.get("Cookie", ""))
                 else:
                     info = probe(url, headers, self.settings["proxy"],
                                  self.settings["use_system_proxy"], self.settings["timeout"])

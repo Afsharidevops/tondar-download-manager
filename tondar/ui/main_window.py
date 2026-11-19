@@ -4,7 +4,7 @@ import os
 import re
 import subprocess
 
-from .. import APP_NAME
+from .. import APP_NAME, APP_URL
 from ..qt import QtCore, QtGui, QtWidgets, Qt, QAction, exec_, dialog_accepted
 from ..config import GENERAL
 from ..models import (human_size, human_speed, human_eta, COMPLETED, ERROR, PAUSED, QUEUED,
@@ -247,6 +247,8 @@ class MainWindow(QtWidgets.QMainWindow):
     # ------------------------------------------------------------ build
     def _act(self, text, icon=None, slot=None, shortcut=None, tip=None):
         a = QAction(icons.icon(icon) if icon else QtGui.QIcon(), text, self)
+        if icon:
+            a.setProperty("tondar_icon", icon)
         if slot:
             a.triggered.connect(slot)
         if shortcut:
@@ -309,6 +311,13 @@ class MainWindow(QtWidgets.QMainWindow):
             v.addAction(a)
         h = mb.addMenu("&Help")
         h.addAction(self._act("Browser integration...", None, lambda: self.options()))
+        h.addSeparator()
+        h.addAction(self._act("Project on GitHub", None, lambda: QtGui.QDesktopServices.openUrl(QtCore.QUrl(APP_URL))))
+        h.addAction(self._act("Check for updates", None,
+                              lambda: QtGui.QDesktopServices.openUrl(QtCore.QUrl(APP_URL + "/releases/latest"))))
+        h.addAction(self._act("Report a problem", None,
+                              lambda: QtGui.QDesktopServices.openUrl(QtCore.QUrl(APP_URL + "/issues/new"))))
+        h.addSeparator()
         h.addAction(self._act(f"About {APP_NAME}", "app", lambda: about(self)))
 
     def _build_toolbar(self):
@@ -326,8 +335,8 @@ class MainWindow(QtWidgets.QMainWindow):
                   (self.a_delete, self.a_delete_done), (self.a_start_q, self.a_stop_q, self.a_scheduler),
                   (self.a_speed, self.a_options))
         for gi, grp in enumerate(groups):
-            if gi and modern:
-                tb.addSeparator()
+            if gi:
+                tb.addSeparator().setVisible(modern)
             for a in grp:
                 tb.addAction(a)
         spacer = QtWidgets.QWidget()
@@ -360,6 +369,7 @@ class MainWindow(QtWidgets.QMainWindow):
             n = QtWidgets.QTreeWidgetItem(parent, [text])
             n.setIcon(0, icons.icon(ic))
             n.setData(0, Qt.ItemDataRole.UserRole, (kind, val))
+            n.setData(0, Qt.ItemDataRole.UserRole + 1, ic)
             return n
         cats = list(self.s["categories"].keys())
         root_all = node(self.tree, "All Downloads", "all", "all", None)
@@ -593,9 +603,48 @@ class MainWindow(QtWidgets.QMainWindow):
         self.s.save()
 
     def options(self):
+        old_theme = self.s.get("theme", "auto")
         dlg = OptionsDialog(self.s, self, self.ext_dir)
         exec_(dlg)
         self.a_speed.setChecked(bool(self.s["speed_limit_enabled"]))
+        if self.s.get("theme", "auto") != old_theme:
+            self.apply_theme(self.s.get("theme", "auto"))
+
+    def apply_theme(self, name):
+        """Switch theme without restarting: palette, stylesheet, icons, list styling."""
+        theme.apply(QtWidgets.QApplication.instance(), name)
+        modern = theme.is_modern()
+        for a in self.findChildren(QAction):
+            ic = a.property("tondar_icon")
+            if ic:
+                a.setIcon(icons.icon(ic))
+        self.setWindowIcon(icons.icon("app"))
+        self.tray.setIcon(icons.icon("app"))
+        tb = self.toolbar
+        tb.setIconSize(QtCore.QSize(30, 30) if modern else QtCore.QSize(40, 40))
+        tb.setStyleSheet("" if modern else
+                         "QToolBar{spacing:2px; padding:2px; border-bottom:1px solid #c8d0d8;"
+                         "background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #fbfcfd,stop:1 #e7ecf1);}"
+                         "QToolButton{min-width:64px; padding:3px 2px; color:#1d2b38;}")
+        for a in tb.actions():
+            if a.isSeparator():
+                a.setVisible(modern)
+        self.tree.setHeaderHidden(modern)
+        self.tree.setIndentation(14 if modern else 20)
+        self.tree.setIconSize(QtCore.QSize(18, 18) if modern else QtCore.QSize(16, 16))
+        self.tree.setFocusPolicy(Qt.FocusPolicy.NoFocus if modern else Qt.FocusPolicy.StrongFocus)
+        it = QtWidgets.QTreeWidgetItemIterator(self.tree)
+        while it.value():
+            node = it.value()
+            ic = node.data(0, Qt.ItemDataRole.UserRole + 1)
+            if ic:
+                node.setIcon(0, icons.icon(ic))
+            it += 1
+        self.view.setAlternatingRowColors(not modern)
+        self.view.setIconSize(QtCore.QSize(20, 20) if modern else QtCore.QSize(16, 16))
+        self.view.viewport().update()
+        for w in QtWidgets.QApplication.topLevelWidgets():
+            w.update()
 
     def scheduler(self):
         exec_(SchedulerDialog(self.m, self.s, self))
@@ -648,7 +697,13 @@ class MainWindow(QtWidgets.QMainWindow):
     def on_browser_media(self, data):
         url = data.get("url")
         info = self.media_cache.get(url)
-        req = {"url": url, "media": True, "media_info": info, "media_option": data.get("format")}
+        title = (data.get("title") or "").strip()
+        if info and title:
+            # streams have meaningless names (chunk.m3u8): use the page title instead
+            info = dict(info, title=title)
+        req = {"url": url, "media": True, "media_info": info, "media_option": data.get("format"),
+               "referer": data.get("referer", ""), "cookies": data.get("cookies", ""),
+               "user_agent": data.get("userAgent", ""), "title": title}
         if self.s["show_file_info_dialog"] or not info:
             self.new_download(req)
             return
@@ -657,7 +712,8 @@ class MainWindow(QtWidgets.QMainWindow):
         cat = "Music" if o["type"] != "video" else "Video"
         it = self.m.new_item(url, media_filename(info["title"], o["ext"]), category=cat, kind=KIND_MEDIA,
                              media_format=o["id"], media_title=info["title"], size=o.get("size") or -1,
-                             page_url=url)
+                             page_url=url, referer=req["referer"], cookies=req["cookies"],
+                             user_agent=req["user_agent"])
         self.m.add(it, start=True)
         if self.s["show_progress_dialog"]:
             self.show_progress(it.id)

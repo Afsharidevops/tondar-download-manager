@@ -6,15 +6,27 @@ the snap (default), the Mozilla .deb and tarball builds. The signed .xpi
 is copied next to it because the snap can only read that folder.
 Existing policies written by the admin or other software are preserved.
 """
+import glob
 import json
 import os
 import shutil
 import sys
+import zipfile
 
 POLICY_DIR = "/etc/firefox/policies"
 POLICY_FILE = os.path.join(POLICY_DIR, "policies.json")
 XPI_SRC = "/usr/share/tondar/extension/tondar-firefox-signed.xpi"
-XPI_DST = os.path.join(POLICY_DIR, "tondar-firefox.xpi")
+XPI_GLOB = os.path.join(POLICY_DIR, "tondar-firefox*.xpi")
+
+
+def xpi_dst():
+    """Versioned name, so a new signed add-on gets a new install_url and Firefox updates it."""
+    try:
+        with zipfile.ZipFile(XPI_SRC) as z:
+            ver = json.loads(z.read("manifest.json"))["version"]
+    except Exception:
+        ver = "0"
+    return os.path.join(POLICY_DIR, f"tondar-firefox-{ver}.xpi")
 ADDON_ID = "tondar@tondar-dm.local"
 
 
@@ -42,24 +54,26 @@ def install():
     if not os.path.exists(XPI_SRC):
         return
     os.makedirs(POLICY_DIR, exist_ok=True)
-    shutil.copyfile(XPI_SRC, XPI_DST)
-    os.chmod(XPI_DST, 0o644)
+    dst = xpi_dst()
+    for old in glob.glob(XPI_GLOB):
+        if old != dst:
+            os.remove(old)
+    shutil.copyfile(XPI_SRC, dst)
+    os.chmod(dst, 0o644)
     data = load()
     if data is None:
         return
     ext = data.setdefault("policies", {}).setdefault("ExtensionSettings", {})
     ext[ADDON_ID] = {
         "installation_mode": "normal_installed",
-        "install_url": "file://" + XPI_DST,
+        "install_url": "file://" + dst,
     }
     save(data)
 
 
 def remove():
-    try:
-        os.remove(XPI_DST)
-    except FileNotFoundError:
-        pass
+    for old in glob.glob(XPI_GLOB):
+        os.remove(old)
     data = load()
     if not data:
         return

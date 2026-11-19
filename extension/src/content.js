@@ -13,7 +13,6 @@
   const dismissed = new WeakSet();
   let dismissedFloating = false;
   let host, root, panel, menu, menuOpen = false, lastUrl = location.href;
-  let formatsCache = { url: null, data: null };
 
   function send(msg) {
     return new Promise((res) => {
@@ -41,12 +40,12 @@
   /* --------------------------------------------------------------- UI */
   function build() {
     host = document.createElement("tondar-panel");
-    host.style.cssText = "all:initial;position:absolute;z-index:2147483647;top:0;left:0;display:none;";
+    host.style.cssText = "all:initial;direction:ltr;position:absolute;z-index:2147483647;top:0;left:0;display:none;";
     root = host.attachShadow({ mode: "closed" });
     root.innerHTML = `
       <style>
         :host{all:initial}
-        .wrap{font:13px/1.2 system-ui,-apple-system,"Segoe UI",Ubuntu,sans-serif;color:#fff;user-select:none}
+        .wrap{direction:ltr;text-align:left;font:13px/1.2 system-ui,-apple-system,"Segoe UI",Ubuntu,sans-serif;color:#fff;user-select:none}
         .btn{display:flex;align-items:center;gap:6px;height:30px;padding:0 4px 0 9px;border-radius:6px;
              background:linear-gradient(#2f86f0,#1458b8);box-shadow:0 2px 8px rgba(0,0,0,.45);
              border:1px solid rgba(255,255,255,.25);cursor:pointer;opacity:.93;transition:opacity .15s}
@@ -60,8 +59,10 @@
               border:1px solid #b9c6d3;display:none;padding:4px 0}
         .menu.open{display:block}
         .head{padding:6px 12px 4px;font-size:11px;font-weight:700;color:#5b6b7b;text-transform:uppercase}
-        .title{padding:2px 12px 6px;font-size:12px;color:#334;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .title{padding:2px 12px 6px;unicode-bidi:plaintext;font-size:12px;color:#334;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
         .it{display:flex;justify-content:space-between;gap:16px;padding:7px 12px;cursor:pointer;white-space:nowrap}
+        .it .nm{overflow:hidden;text-overflow:ellipsis;min-width:0}
+        .it .sz{flex:none}
         .it:hover{background:#1f6fd8;color:#fff}
         .it .sz{color:#7a8794}.it:hover .sz{color:#e3edfb}
         .msg{padding:10px 12px;color:#556;white-space:normal}
@@ -121,60 +122,77 @@
     return e;
   }
 
+  function shortName(url) {
+    let n = url.split("?")[0].split("#")[0].split("/").pop() || url;
+    try { n = decodeURIComponent(n); } catch (e) { /* keep raw */ }
+    return n;
+  }
+
+  function sizeText(e) {
+    const sz = human(e.size);
+    return sz ? (e.approx ? "~" + sz : sz) : "size unknown";
+  }
+
+  let resolveCache = { key: null, data: null };
+
   async function fillMenu() {
     menu.textContent = "";
     const pageUrl = location.href;
-    const useYtdlp = isMediaPage() || sniffed.length === 0 || (target && !sniffed.length);
-    let loading = null;
-    if (useYtdlp) {
-      loading = el("div", "msg");
-      loading.innerHTML = '<span class="spin"></span>Reading available qualities...';
-      menu.appendChild(loading);
-    }
-    // direct files / streams seen on this tab
-    if (sniffed.length && !(/youtube\.com/i.test(location.hostname))) {
-      menu.appendChild(el("div", "head", "Detected on this page"));
-      for (const s of sniffed.slice(-12).reverse()) {
-        const name = decodeURIComponent((s.url.split("?")[0].split("/").pop() || s.kind)).slice(0, 48);
-        const row = el("div", "it");
-        row.appendChild(el("span", "", (s.kind === "stream" ? "Stream " : s.kind === "audio" ? "Audio " : "Video ") + name));
-        row.appendChild(el("span", "sz", human(s.size)));
-        row.addEventListener("click", () => {
-          if (s.kind === "stream") act({ type: "media-download", url: s.url, format: null });
-          else act({ type: "file-download", url: s.url, referer: pageUrl });
-        });
-        menu.appendChild(row);
+    const loading = el("div", "msg");
+    const spin = el("span", "spin");
+    loading.append(spin, "Finding videos on this page...");
+    menu.appendChild(loading);
+
+    // what the tab has played so far + the current <video>/<audio> source
+    const streams = [], files = [];
+    for (const s of sniffed) (s.kind === "stream" ? streams : files).push(s.url);
+    for (const m of document.querySelectorAll("video, audio, video source, audio source")) {
+      const src = m.currentSrc || m.src;
+      if (src && /^https?:/i.test(src)) {
+        (/\.(m3u8|mpd)(\?|$)/i.test(src) ? streams : files).push(src);
       }
     }
-    if (!useYtdlp) return;
-    let data = formatsCache.url === pageUrl ? formatsCache.data : null;
+    const uniq = (a) => [...new Set(a)].slice(-12);
+    const req = { type: "resolve", page: pageUrl, title: document.title, streams: uniq(streams).reverse(),
+                  files: uniq(files).reverse() };
+    const key = JSON.stringify(req);
+    let data = resolveCache.key === key ? resolveCache.data : null;
     if (!data) {
-      data = await send({ type: "formats", url: pageUrl });
-      if (!data.error) formatsCache = { url: pageUrl, data };
+      data = await send(req);
+      if (!data.error) resolveCache = { key, data };
     }
     if (!menuOpen) return;
-    loading.remove();
-    if (data.error) {
-      if (!sniffed.length) {
-        const m = el("div", "msg err", /not running/.test(data.error)
-          ? "Tondar Download Manager is not running. Start it and try again."
-          : "No downloadable video found: " + data.error.slice(0, 160));
-        menu.prepend(m);
-      }
+    menu.textContent = "";
+    if (data.error && !(data.entries || []).length) {
+      menu.appendChild(el("div", "msg err", /not running/.test(data.error)
+        ? "Tondar Download Manager is not running. Start it and try again."
+        : "No downloadable video found on this page." + (data.error ? " (" + data.error.slice(0, 140) + ")" : "")));
       return;
     }
-    const frag = document.createDocumentFragment();
-    frag.appendChild(el("div", "head", "Download with Tondar"));
-    if (data.title) frag.appendChild(el("div", "title", data.title));
-    for (const o of data.options) {
-      const row = el("div", "it");
-      row.appendChild(el("span", "", o.label));
-      const sz = human(o.size);
-      row.appendChild(el("span", "sz", sz ? (o.approx ? "~" + sz : sz) : "size unknown"));
-      row.addEventListener("click", () => act({ type: "media-download", url: pageUrl, format: o.id }));
-      frag.appendChild(row);
+    menu.appendChild(el("div", "head", "Download with Tondar"));
+    if (data.title) {
+      const t = el("div", "title", data.title);
+      t.dir = "auto";
+      menu.appendChild(t);
     }
-    menu.prepend(frag);
+    let lastKind = null;
+    for (const e of data.entries) {
+      if (e.kind === "file" && lastKind !== "file") menu.appendChild(el("div", "head", "Files on this page"));
+      lastKind = e.kind;
+      const row = el("div", "it");
+      const label = el("span", "nm", e.kind === "file" ? shortName(e.label || e.url) : e.label);
+      label.title = e.kind === "file" ? e.url : e.label;
+      row.append(label, el("span", "sz", sizeText(e)));
+      row.addEventListener("click", () => {
+        if (e.kind === "file") {
+          act({ type: "file-download", url: e.url, referer: e.referer || pageUrl, filename: e.label || "" });
+        } else {
+          act({ type: "media-download", url: e.url, format: e.format, referer: e.referer || "",
+                title: e.url !== pageUrl ? (data.title || document.title) : "" });
+        }
+      });
+      menu.appendChild(row);
+    }
   }
 
   async function act(msg) {
@@ -211,7 +229,7 @@
     if (location.href !== lastUrl) {
       lastUrl = location.href;
       sniffed = [];
-      formatsCache = { url: null, data: null };
+      resolveCache = { key: null, data: null };
       dismissedFloating = false;
       closeMenu();
     }

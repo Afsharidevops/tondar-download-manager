@@ -6,7 +6,7 @@ import threading
 import time
 import urllib.parse
 
-from .. import APP_NAME, VERSION
+from .. import APP_NAME, VERSION, APP_URL
 from ..qt import QtCore, QtGui, QtWidgets, Qt, Signal, exec_
 from ..config import GENERAL, BIN_DIR
 from ..models import (human_size, human_speed, human_eta, COMPLETED, ERROR, PAUSED,
@@ -234,6 +234,8 @@ class FileInfoDialog(QtWidgets.QDialog):
                 self.size_lbl.setText("Size: unknown  (" + error[:120] + ")")
             return
         if self.is_media or "options" in info:
+            if self.req.get("title"):
+                info = dict(info, title=self.req["title"])
             self.is_media = True
             self.media_info = info
             self.quality.blockSignals(True)
@@ -983,12 +985,23 @@ class SchedulerDialog(QtWidgets.QDialog):
 
 
 def about(parent):
-    QtWidgets.QMessageBox.about(
-        parent, f"About {APP_NAME}",
+    box = QtWidgets.QMessageBox(parent)
+    box.setWindowTitle(f"About {APP_NAME}")
+    box.setIconPixmap(icons.pixmap("app", 64))
+    box.setTextFormat(Qt.TextFormat.RichText)
+    box.setText(
         f"<h3>{APP_NAME} {VERSION}</h3>"
         "<p>Segmented download accelerator for Ubuntu with browser integration "
         "and video grabbing (powered by yt-dlp).</p>"
-        f"<p>Helper tools folder: <code>{BIN_DIR}</code></p>")
+        f"<p>GitHub: <a href='{APP_URL}'>{APP_URL.replace('https://', '')}</a><br>"
+        f"Report a problem: <a href='{APP_URL}/issues'>Issues</a> · "
+        f"Latest version: <a href='{APP_URL}/releases/latest'>Releases</a></p>"
+        f"<p style='color:gray'>Helper tools folder: <code>{BIN_DIR}</code></p>")
+    for lab in box.findChildren(QtWidgets.QLabel):
+        lab.setOpenExternalLinks(True)
+        lab.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+    box.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Ok)
+    exec_(box)
 
 
 # ===========================================================================

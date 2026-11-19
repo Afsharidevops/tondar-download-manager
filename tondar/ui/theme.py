@@ -97,6 +97,7 @@ QLabel#hint {{ color: {muted}; }}
 
 current = dict(LIGHT)
 mode = "light"
+_native = {}          # style name, palette and font before we touched anything
 
 
 def system_is_dark():
@@ -107,12 +108,25 @@ def system_is_dark():
 def apply(app, name):
     """name: auto | light | dark | classic"""
     global current, mode
+    if not _native:
+        _native["style"] = app.style().objectName()
+        _native["palette"] = QtGui.QPalette(app.palette())
+        _native["font"] = QtGui.QFont(app.font())
     if name == "classic":
         mode = "classic"
         current = dict(LIGHT)
         icons.set_flat(False)
+        app.setStyleSheet("")
+        if _native.get("style"):
+            app.setStyle(_native["style"])
+        app.setPalette(_native["palette"])
+        app.setFont(_native["font"])
         return
-    dark = system_is_dark() if name == "auto" else name == "dark"
+    if name == "auto":
+        # judge the *system* palette, not the one we may have installed earlier
+        dark = _native["palette"].color(QtGui.QPalette.ColorRole.Window).lightness() < 110
+    else:
+        dark = name == "dark"
     mode = "dark" if dark else "light"
     c = DARK if dark else LIGHT
     current = dict(c)

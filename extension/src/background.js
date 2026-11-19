@@ -161,8 +161,16 @@ B.runtime.onMessage.addListener((msg, sender, reply) => {
         reply({ ok: !!info, panel: c.panel && (!info || info.media_panel !== false), info });
       } else if (msg.type === "formats") {
         reply(await api("/media/formats", { url: msg.url }, 120000));
+      } else if (msg.type === "resolve") {
+        const cookies = await cookiesFor(msg.page);
+        reply(await api("/media/resolve", { page: msg.page, title: msg.title, streams: msg.streams,
+                                            files: msg.files, referer: msg.page, cookies }, 180000));
       } else if (msg.type === "media-download") {
-        reply(await api("/media/download", { url: msg.url, format: msg.format }));
+        const ref = msg.referer || sender.tab?.url || "";
+        const cookies = await cookiesFor(msg.url);
+        reply(await api("/media/download", { url: msg.url, format: msg.format, referer: msg.referer || "",
+                                             title: msg.title || "", cookies, userAgent: navigator.userAgent,
+                                             pageUrl: ref }));
       } else if (msg.type === "file-download") {
         reply(await sendDownload(msg.url, msg.referer, msg.filename || ""));
       } else if (msg.type === "sniffed") {
