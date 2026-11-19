@@ -21,6 +21,9 @@ A fast, segmented download manager for **Ubuntu 22.04 – 26.04, Windows 10/11 a
   - adds a **Download this video** panel on web players, with a quality menu (1080p, 720p, … M4A, MP3);
   - detects video, audio and HLS (`.m3u8`) streams on any page;
   - right-click menu: *Download with Tondar*, *Download all links*.
+- **Protected streams:** encrypted HLS (AES-128) and players that check Referer, Origin or login cookies (for example ArvanCloud players and Instagram reels). The extension passes the browser's real headers and cookies to the download.
+- **YouTube playlists:** *Download all links* on a YouTube playlist, Mix or channel finds every video in it. Pick one quality for all of them; each playlist gets its own folder with numbered files.
+- **Refresh address:** if a download link expires (for example after your internet connection or IP changes), right-click the download, choose *Refresh address*, open the page again in the browser, and the download continues from where it stopped.
 - **Video sites** (YouTube and about 1,800 others) through [yt-dlp](https://github.com/yt-dlp/yt-dlp). The latest yt-dlp and Deno are downloaded on first use and updated weekly.
 - **Connections:** HTTP, HTTPS and FTP; HTTP and SOCKS5 proxies; browser cookies and referer; Basic Auth.
 - **Import and export download lists:** plain text, IDM export files (`.ef2`, so lists move between Windows IDM and Tondar) and Tondar `.json` lists with file names and folders.
