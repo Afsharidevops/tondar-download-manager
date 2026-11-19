@@ -19,7 +19,7 @@ FIELDS = dict(
     size=-1, downloaded=0, resumable=False, status=WAITING, segments=None,
     added=0.0, last_try=0.0, finished=0.0, description="", referer="", cookies="",
     user_agent="", headers=None, kind=KIND_HTTP, media_format="", media_title="",
-    error="", queue="Main queue", page_url="", auto_name=False,
+    error="", queue="Main queue", page_url="", auto_name=False, cookie_jar=None,
 )
 
 

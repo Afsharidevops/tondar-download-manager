@@ -326,7 +326,8 @@ class FileInfoDialog(QtWidgets.QDialog):
                 return
             it = self.m.new_item(self.req["url"], filename, save_dir, cat, kind=KIND_MEDIA,
                                  media_format=o["id"], media_title=self.media_info["title"],
-                                 size=o.get("size") or -1, page_url=self.req["url"], **common)
+                                 size=o.get("size") or -1, page_url=self.req["url"],
+                                 cookie_jar=self.req.get("cookie_jar"), **common)
         else:
             it = self.m.new_item(self.req["url"], filename, save_dir, cat, kind=KIND_HTTP, **common)
             if self.info:
@@ -1028,9 +1029,11 @@ class LinksDialog(QtWidgets.QDialog):
         from concurrent.futures import ThreadPoolExecutor
         from ..engine import probe
         self.s = settings
-        self.links = [dict(l) for l in links if re.match(r"^(https?|ftp)://", l.get("url", ""), re.I)]
+        self.expand = []                 # playlist/channel pages to list with yt-dlp
+        self.links = self._prepare(links)
         self.touched = set()
         self.n_done = 0
+        self.n_top = 0                   # rows that came from the page's own playlist (kept on top, in order)
         self.closed = False
         self.setWindowTitle(title)
         self.setWindowIcon(icons.icon("app"))
@@ -1061,16 +1064,32 @@ class LinksDialog(QtWidgets.QDialog):
         refrow.addWidget(self.recheck)
         lay.addLayout(refrow)
 
+        from ..media import QUALITY_PRESETS
+        self.presets = QUALITY_PRESETS
+        self.qrow = QtWidgets.QWidget()
+        ql = QtWidgets.QHBoxLayout(self.qrow)
+        ql.setContentsMargins(0, 0, 0, 0)
+        ql.addWidget(QtWidgets.QLabel("Video quality:"))
+        self.quality = QtWidgets.QComboBox()
+        for p in QUALITY_PRESETS:
+            self.quality.addItem(p[0])
+        ql.addWidget(self.quality)
+        self.list_info = QtWidgets.QLabel()
+        self.list_info.setObjectName("hint")
+        ql.addWidget(self.list_info, 1)
+        lay.addWidget(self.qrow)
+        self.qrow.setVisible(bool(self.expand) or any(l.get("yt") in ("video", "playlist") for l in self.links))
+        self.quality.currentIndexChanged.connect(lambda *_: self._refresh_yt_rows())
+
         self.tree = QtWidgets.QTreeWidget()
         self.tree.setHeaderLabels(self.COLS)
         self.tree.setRootIsDecorated(False)
         self.tree.setUniformRowHeights(True)
-        self.tree.setSortingEnabled(True)
         self.tree.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
         hdr = self.tree.header()
-        hdr.resizeSection(0, 360)
+        hdr.resizeSection(0, 340)
         hdr.resizeSection(1, 90)
-        hdr.resizeSection(2, 110)
+        hdr.resizeSection(2, 170)
         lay.addWidget(self.tree, 1)
 
         self.status = QtWidgets.QLabel()
@@ -1100,23 +1119,16 @@ class LinksDialog(QtWidgets.QDialog):
 
         self.tree.setSortingEnabled(False)
         for i, l in enumerate(self.links):
-            name = l.get("filename") or self._name_from_url(l["url"])
-            it = _SortItem([name, "", "checking..." if l.get("kind") != KIND_MEDIA else "Video",
-                                            l["url"]])
-            it.setData(0, Qt.ItemDataRole.UserRole, i)
-            it.setIcon(0, icons.icon(self.s.category_for(name)))
-            it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            it.setCheckState(0, Qt.CheckState.Checked if self._wanted(name) or l.get("kind") == KIND_MEDIA
-                             else Qt.CheckState.Unchecked)
-            it.setTextAlignment(1, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            if (l.get("size") or 0) > 0:
-                it.setText(1, human_size(l["size"]))
-                it.setData(1, Qt.ItemDataRole.UserRole, l["size"])
-            self.tree.addTopLevelItem(it)
-            l["_item"] = it
-        self.tree.setSortingEnabled(True)
-        self.tree.sortByColumn(3, Qt.SortOrder.AscendingOrder)
+            self.tree.addTopLevelItem(self._make_row(l, i))
+        # keep the page's order; clicking a column header still sorts
+        hdr = self.tree.header()
+        hdr.setSectionsClickable(True)
+        hdr.setSortIndicatorShown(False)
+        hdr.sectionClicked.connect(self._sort_by)
         self.tree.itemChanged.connect(self._item_changed)
+        for l in self.links:
+            if l.get("yt") == "page":
+                l["_item"].setHidden(not self.show_pages.isChecked())
         self.filter.textChanged.connect(self._apply_filter)
         self.show_pages.toggled.connect(self._apply_filter)
 
@@ -1152,7 +1164,15 @@ class LinksDialog(QtWidgets.QDialog):
         gen = self.generation
         self.n_done = 0
         timeout = min(12, self.s["timeout"])
+        if gen == 1:
+            for k, url in enumerate(self.expand):
+                self._submit_yt(-1 - k, "expand", url, gen)
+        else:
+            self.n_done += len(self.expand)
         for i, l in enumerate(self.links):
+            if l.get("yt"):
+                self._probe_yt(i, gen)
+                continue
             if l.get("kind") == KIND_MEDIA and l.get("media_format"):
                 self.n_done += 1
                 continue
@@ -1179,9 +1199,225 @@ class LinksDialog(QtWidgets.QDialog):
             self.pool.submit(job)
         self._update_status()
 
+    # ------------------------------------------------------------ YouTube
+    YT_SIZE_LIMIT = 40          # look up sizes of at most this many videos (each costs a yt-dlp run)
+
+    def _prepare(self, links):
+        from .. import media as M
+        out, seen_v, seen_l = [], set(), set()
+        for l in links:
+            u = l.get("url", "")
+            if not re.match(r"^(https?|ftp)://", u, re.I):
+                continue
+            kind = M.classify_link(u)
+            if kind == "ad":
+                continue
+            text = re.sub(r"\s+", " ", l.get("text") or "").strip()[:150]
+            if l.get("page"):
+                # the page the user is on: list its playlist / channel, it is not a download itself
+                if kind in ("playlist", "channel") or (kind == "video" and M.yt_list_id(u)):
+                    self.expand.append(u if kind == "channel" else M.yt_playlist_url(u))
+                continue
+            if kind == "video":
+                vu = M.yt_video_url(u)
+                if vu in seen_v:
+                    continue
+                seen_v.add(vu)
+                out.append(dict(l, url=vu, yt="video", title=text, _page=False))
+            elif kind == "playlist":
+                key = M.yt_list_id(u)
+                if key in seen_l:
+                    continue
+                seen_l.add(key)
+                out.append(dict(l, url=M.yt_playlist_url(u), yt="playlist", title=text, _page=False))
+            elif kind in ("channel", "page"):
+                out.append(dict(l, yt="page", _page=True))
+            else:
+                out.append(dict(l))
+        return out
+
+    def preset(self):
+        return self.presets[self.quality.currentIndex()]
+
+    def _make_row(self, l, i):
+        if l.get("yt") == "video":
+            name, typ, icon = l.get("title") or self._name_from_url(l["url"]), "YouTube video", "Video"
+        elif l.get("yt") == "playlist":
+            name, typ, icon = l.get("title") or "Playlist", "Playlist", "queue"
+        elif l.get("yt") == "page":
+            name, typ, icon = l.get("title") or self._name_from_url(l["url"]), "Web page", GENERAL
+        else:
+            name = l.get("filename") or self._name_from_url(l["url"])
+            typ, icon = ("checking..." if l.get("kind") != KIND_MEDIA else "Video"), self.s.category_for(name)
+        it = _SortItem([name, "", typ, l["url"]])
+        it.setData(0, Qt.ItemDataRole.UserRole, i)
+        it.setIcon(0, icons.icon(icon))
+        it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+        checked = (not l.get("yt") and (self._wanted(name) or l.get("kind") == KIND_MEDIA)) or l.get("_check")
+        it.setCheckState(0, Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
+        it.setTextAlignment(1, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        if (l.get("size") or 0) > 0:
+            it.setText(1, human_size(l["size"]))
+            it.setData(1, Qt.ItemDataRole.UserRole, l["size"])
+        if l.get("yt") == "page":
+            it.setHidden(not self.show_pages.isChecked())
+        l["_item"] = it
+        return it
+
+    def _submit_yt(self, i, what, url, gen):
+        from .. import media as M
+        if not hasattr(self, "ytpool"):
+            from concurrent.futures import ThreadPoolExecutor
+            self.ytpool = ThreadPoolExecutor(max_workers=3)   # gentle with YouTube
+
+        def job():
+            if self.closed or gen != self.generation:
+                return
+            try:
+                if what == "media":
+                    info = {"yt_media": M.probe_media(url, self.s)}
+                else:
+                    info = {"yt_list" if what == "list" else "expand": M.flat_playlist(url, self.s)}
+            except Exception as e:  # noqa: BLE001
+                info = {"error": str(e)[:200]}
+            if not self.closed and gen == self.generation:
+                self.sig.result.emit(i, info)
+        self.ytpool.submit(job)
+
+    def _probe_yt(self, i, gen):
+        l = self.links[i]
+        if l["yt"] == "page" or "_media" in l or "_entries" in l:
+            self.n_done += 1
+        elif l["yt"] == "playlist":
+            l["_item"].setText(2, "Playlist · counting...")
+            self._submit_yt(i, "list", l["url"], gen)
+        elif sum(1 for x in self.links if x.get("yt") == "video") <= self.YT_SIZE_LIMIT:
+            self._submit_yt(i, "media", l["url"], gen)
+        else:
+            self.n_done += 1
+
+    @staticmethod
+    def _dur(sec):
+        sec = int(sec or 0)
+        if not sec:
+            return ""
+        h, r = divmod(sec, 3600)
+        m, s_ = divmod(r, 60)
+        return f"{h}:{m:02d}:{s_:02d}" if h else f"{m}:{s_:02d}"
+
+    def _refresh_yt_rows(self):
+        from ..media import pick_size
+        p = self.preset()
+        self.tree.blockSignals(True)
+        for l in self.links:
+            if l.get("yt") != "video":
+                continue
+            it = l["_item"]
+            size, approx = pick_size((l.get("_media") or {}).get("options"), p)
+            l["size"] = size
+            it.setText(1, (("~" if approx else "") + human_size(size)) if size else "")
+            it.setData(1, Qt.ItemDataRole.UserRole, size)
+            d = self._dur(l.get("duration"))
+            it.setText(2, "YouTube video" + (f" · {d}" if d else ""))
+        self.tree.blockSignals(False)
+        self._update_status()
+
+    def _on_yt_result(self, i, info):
+        if "expand" in info:
+            self._add_expanded(info["expand"])
+            return
+        l = self.links[i]
+        it = l["_item"]
+        if "yt_list" in info:
+            res = info["yt_list"]
+            l["_entries"] = res["entries"]
+            l["list_title"] = res["title"] or l.get("title") or "Playlist"
+            if not l.get("title"):
+                l["title"] = l["list_title"]
+                it.setText(0, l["title"])
+            n = sum(1 for e in res["entries"] if e["kind"] == "video")
+            it.setText(2, f"Playlist · {n} videos")
+            total = sum(e["duration"] or 0 for e in res["entries"])
+            it.setText(1, self._dur(total))
+            it.setData(1, Qt.ItemDataRole.UserRole, 0)
+        elif "yt_media" in info:
+            res = info["yt_media"]
+            l["_media"] = res
+            l["duration"] = l.get("duration") or res.get("duration")
+            if not l.get("title"):
+                l["title"] = res.get("title") or l["url"]
+                it.setText(0, l["title"])
+            self._refresh_yt_rows()
+
+    def _add_expanded(self, res):
+        """The page's own playlist / channel listing: put it on top, in order, checked."""
+        from .. import media as M
+        title = res.get("title") or "Playlist"
+        by_url = {l["url"]: l for l in self.links}
+        added_videos = 0
+        self.tree.blockSignals(True)
+        for idx, e in enumerate(res["entries"], 1):
+            if e["kind"] == "video":
+                l = by_url.get(e["url"])
+                if l is None:
+                    l = {"url": e["url"], "yt": "video", "_page": False}
+                    self.links.append(l)
+                    by_url[e["url"]] = l
+                    self._make_row(l, len(self.links) - 1)
+                else:
+                    self.tree.takeTopLevelItem(self.tree.indexOfTopLevelItem(l["_item"]))
+                l.update(title=e["title"], duration=e["duration"], list_title=title, list_index=idx, _check=True)
+                l["_item"].setText(0, e["title"])
+                if self.links.index(l) not in self.touched:
+                    l["_item"].setCheckState(0, Qt.CheckState.Checked)
+                added_videos += 1
+            else:       # a channel's "Playlists" tab
+                key = M.yt_list_id(e["url"])
+                l = next((x for x in self.links if x.get("yt") == "playlist" and M.yt_list_id(x["url"]) == key), None)
+                if l is None:
+                    l = {"url": M.yt_playlist_url(e["url"]), "yt": "playlist", "_page": False, "title": e["title"]}
+                    self.links.append(l)
+                    self._make_row(l, len(self.links) - 1)
+                    self._probe_yt(len(self.links) - 1, self.generation)
+                else:
+                    self.tree.takeTopLevelItem(self.tree.indexOfTopLevelItem(l["_item"]))
+                l["title"] = e["title"]
+                l["_item"].setText(0, e["title"])
+            self.tree.insertTopLevelItem(self.n_top, l["_item"])
+            self.n_top += 1
+        self.tree.blockSignals(False)
+        self.qrow.setVisible(True)
+        if added_videos:
+            self.list_info.setText(f"  {title}: {added_videos} videos")
+            if sum(1 for x in self.links if x.get("yt") == "video") <= self.YT_SIZE_LIMIT:
+                for k, x in enumerate(self.links):
+                    if x.get("yt") == "video" and "_media" not in x:
+                        self._submit_yt(k, "media", x["url"], self.generation)
+        self._refresh_yt_rows()
+
+    def _sort_by(self, col):
+        order = Qt.SortOrder.DescendingOrder if getattr(self, "_sort", None) == (col, 0) else Qt.SortOrder.AscendingOrder
+        self._sort = (col, 1 if order == Qt.SortOrder.DescendingOrder else 0)
+        self.tree.sortItems(col, order)
+
+    def yt_videos(self, l, wait_parent=None):
+        """Videos a checked YouTube row stands for: itself, or every video of a playlist."""
+        from .. import media as M
+        if l.get("yt") == "video":
+            return [dict(url=l["url"], title=l.get("title") or l["url"], list_title=l.get("list_title"),
+                         list_index=l.get("list_index"))]
+        entries = l.get("_entries")
+        if entries is None:
+            entries = M.flat_playlist(l["url"], self.s)["entries"]
+        lt = l.get("list_title") or l.get("title") or "Playlist"
+        return [dict(url=e["url"], title=e["title"], list_title=lt, list_index=n)
+                for n, e in enumerate([e for e in entries if e["kind"] == "video"], 1)]
+
     def _recheck(self):
         self.tree.blockSignals(True)
         for l in self.links:
+            if l.get("yt"):
+                continue
             for k in ("_page", "_info", "_stream"):
                 l.pop(k, None)
             it = l["_item"]
@@ -1209,6 +1445,19 @@ class LinksDialog(QtWidgets.QDialog):
         if self.closed:
             return
         self.n_done += 1
+        if i < 0 or any(k in info for k in ("expand", "yt_list", "yt_media")) or \
+                (self.links[i].get("yt") and "error" in info):
+            if i >= 0 and "error" in info:
+                it = self.links[i]["_item"]
+                it.setToolTip(2, info["error"])
+                if self.links[i].get("yt") == "playlist":
+                    it.setText(2, "Playlist")
+            elif i < 0 and "error" in info:
+                self.list_info.setText("  Could not read the playlist: " + info["error"][:120])
+            else:
+                self._on_yt_result(i, info)
+            self._update_status()
+            return
         l = self.links[i]
         it = l["_item"]
         self.tree.blockSignals(True)
@@ -1305,26 +1554,36 @@ class LinksDialog(QtWidgets.QDialog):
         return [l for l in self.links if l["_item"].checkState(0) == Qt.CheckState.Checked]
 
     def _update_status(self):
-        files = [l for l in self.links if l.get("_page") is False or l.get("kind") == KIND_MEDIA]
+        files = [l for l in self.links if (l.get("_page") is False and l.get("yt") != "playlist")
+                 or l.get("kind") == KIND_MEDIA]
         pages = sum(1 for l in self.links if l.get("_page"))
         sel = self.selected_links()
+        lists = [l for l in sel if l.get("yt") == "playlist"]
+        sel = [l for l in sel if l.get("yt") != "playlist"]
         sel_size = sum(l.get("size", 0) for l in sel if (l.get("size") or 0) > 0)
         unknown = sum(1 for l in sel if not (l.get("size") or 0) > 0)
         txt = f"Checked: {len(sel)} file(s)"
+        if lists:
+            nv = sum(sum(1 for e in (l.get("_entries") or []) if e["kind"] == "video") for l in lists)
+            txt = (f"Checked: {len(lists)} playlist(s), {nv} videos" + (f" + {len(sel)} file(s)" if sel else ""))
         if sel_size:
             txt += f", {human_size(sel_size)}" + (f" + {unknown} of unknown size" if unknown else "")
         txt += f"     |     Found {len(files)} file(s)"
         if pages:
             txt += f", {pages} web page(s)" + ("" if self.show_pages.isChecked() else " hidden")
-        if self.n_done < len(self.links):
-            txt += f"     |     Checking links {self.n_done}/{len(self.links)}..."
+        total = len(self.links) + len(self.expand)
+        if self.n_done < total:
+            txt += f"     |     Checking links {min(self.n_done, total)}/{total}..."
         self.status.setText(txt)
-        self.ok.setEnabled(bool(sel))
+        self.ok.setEnabled(bool(sel) or bool(lists))
 
     def done(self, r):  # QDialog.done override: stop probing
         self.closed = True
-        try:
-            self.pool.shutdown(wait=False, cancel_futures=True)
-        except TypeError:
-            self.pool.shutdown(wait=False)
+        for pool in (self.pool, getattr(self, "ytpool", None)):
+            if pool is None:
+                continue
+            try:
+                pool.shutdown(wait=False, cancel_futures=True)
+            except TypeError:
+                pool.shutdown(wait=False)
         super().done(r)

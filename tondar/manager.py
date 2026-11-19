@@ -67,9 +67,11 @@ class DownloadManager(QtCore.QObject):
             if it and isinstance(eng, HttpDownloader):
                 eng._persist()
         tmp = str(STATE_FILE) + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
+        # the list can hold login cookies of unfinished downloads: keep it private
+        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as f:
             json.dump({"downloads": [i.to_dict() for i in self.items.values()]}, f,
                       ensure_ascii=False)
+        os.chmod(tmp, 0o600)
         os.replace(tmp, STATE_FILE)
         self._dirty = False
 
@@ -280,6 +282,7 @@ class DownloadManager(QtCore.QObject):
                 except OSError:
                     pass
             it.downloaded = it.size
+            it.cookies, it.cookie_jar = "", None      # not needed any more - don't keep logins around
         elif status == "stopped":
             # stopped by "Stop queue" -> stays in the queue; stopped by the user -> paused
             it.status = QUEUED if getattr(eng, "requeue", False) else PAUSED

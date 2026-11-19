@@ -208,15 +208,56 @@ def _header_args(referer="", cookies="", user_agent="", headers=None):
     return args
 
 
-def probe_media(url, settings, playlist=False, timeout=90, referer="", cookies="", headers=None):
+def write_cookie_jar(jar):
+    """Browser cookies (list of {domain, path, secure, expires, name, value, hostOnly}) ->
+    a private Netscape cookies.txt that yt-dlp reads with --cookies. Sites such as Instagram
+    call several sub-domains (www., i.), so a single Cookie header is not enough."""
+    import tempfile
+    from .config import DATA_DIR
+    d = DATA_DIR / "cookies"
+    d.mkdir(parents=True, exist_ok=True)
+    os.chmod(d, 0o700)
+    fd, path = tempfile.mkstemp(prefix="jar-", suffix=".txt", dir=str(d))
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write("# Netscape HTTP Cookie File\n")
+        for c in jar or []:
+            try:
+                dom = str(c["domain"])
+                if not c.get("hostOnly") and not dom.startswith("."):
+                    dom = "." + dom
+                name, value = str(c["name"]), str(c["value"])
+                if "\t" in name + value or "\n" in name + value:
+                    continue
+                f.write("\t".join([dom, "TRUE" if dom.startswith(".") else "FALSE", c.get("path") or "/",
+                                    "TRUE" if c.get("secure") else "FALSE",
+                                    str(int(c.get("expires") or 0)), name, value]) + "\n")
+            except (KeyError, TypeError, ValueError):
+                continue
+    return path
+
+
+def _remove(path):
+    try:
+        if path:
+            os.remove(path)
+    except OSError:
+        pass
+
+
+def probe_media(url, settings, playlist=False, timeout=90, referer="", cookies="", headers=None,
+                cookie_jar=None):
     """Return {'title','ext','thumbnail','duration','options':[...]}"""
     ensure_tools(settings)
-    args = _base_args(settings) + _header_args(referer, cookies, headers=headers) + \
+    jar = write_cookie_jar(cookie_jar) if cookie_jar else None
+    args = _base_args(settings) + _header_args(referer, "" if jar else cookies, headers=headers) + \
+        (["--cookies", jar] if jar else []) + \
         ["-J", "--no-playlist" if not playlist else "--flat-playlist", url]
     try:
         p = subprocess.run(args, capture_output=True, text=True, timeout=timeout, env=_env())
     except subprocess.TimeoutExpired:
         raise MediaError("yt-dlp timed out while reading the page")
+    finally:
+        _remove(jar)
     if p.returncode != 0 or not p.stdout.strip():
         err = [ln for ln in p.stderr.splitlines() if "ERROR" in ln]
         raise MediaError((err[-1] if err else p.stderr.strip()[-400:]) or "yt-dlp failed")
@@ -422,7 +463,11 @@ class MediaDownloader:
                 args += ["-f", it.media_format or "bv*+ba/b"]
                 if "+" in (it.media_format or "+"):
                     args += ["--merge-output-format", ext if ext in ("mp4", "mkv", "webm") else "mp4"]
-            args += _header_args(it.referer, it.cookies, it.user_agent, it.headers)
+            jar = write_cookie_jar(it.cookie_jar) if it.cookie_jar else None
+            self.jar = jar
+            if jar:
+                args += ["--cookies", jar]
+            args += _header_args(it.referer, "" if jar else it.cookies, it.user_agent, it.headers)
             args.append(it.page_url or it.url)
             self.proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                          text=True, env=_env(), bufsize=1,
@@ -443,6 +488,7 @@ class MediaDownloader:
                 if line:
                     self.tail = (self.tail + [line])[-15:]
             rc = self.proc.wait()
+            _remove(getattr(self, "jar", None))
             if self.stopped:
                 self.on_done(self, "stopped", None)
             elif rc == 0:
@@ -476,3 +522,152 @@ class MediaDownloader:
             known = sum(self.done_streams.values()) + self.cur_total
             if known > 0 and (self.item.size <= 0 or total):
                 self.item.size = max(known, sum(self.done_streams.values()) + self.cur_bytes)
+
+
+# --------------------------------------------------------------------------
+# YouTube links, playlists and channels (for "Download all links")
+# --------------------------------------------------------------------------
+from urllib.parse import urlsplit, parse_qs  # noqa: E402
+
+_YT_HOSTS = ("youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com",
+             "youtube-nocookie.com", "www.youtube-nocookie.com")
+_YT_TAB = re.compile(r"^/(@[^/]+|channel/[^/]+|c/[^/]+|user/[^/]+)"
+                     r"(/(videos|shorts|streams|playlists|featured|releases|podcasts))?/?$")
+AD_HOSTS = re.compile(r"(^|\.)(googleadservices\.com|doubleclick\.net|googlesyndication\.com|"
+                      r"google-analytics\.com|googletagmanager\.com|adservice\.google\.[a-z.]+)$", re.I)
+
+# quality presets used for whole playlists: (label, yt-dlp format, extension, category)
+QUALITY_PRESETS = [
+    ("Best quality (MP4)", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b", "mp4", "Video", None),
+    ("1080p", "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080]/bv*[height<=1080]+ba/b", "mp4", "Video", 1080),
+    ("720p", "bv*[height<=720][ext=mp4]+ba[ext=m4a]/b[height<=720]/bv*[height<=720]+ba/b", "mp4", "Video", 720),
+    ("480p", "bv*[height<=480][ext=mp4]+ba[ext=m4a]/b[height<=480]/bv*[height<=480]+ba/b", "mp4", "Video", 480),
+    ("360p", "bv*[height<=360][ext=mp4]+ba[ext=m4a]/b[height<=360]/bv*[height<=360]+ba/b", "mp4", "Video", 360),
+    ("Audio only (M4A)", "ba[ext=m4a]/ba", "m4a", "Music", "audio"),
+    ("Audio only (MP3)", "bestaudio/best", "mp3", "Music", "mp3"),
+]
+
+
+def _host(url):
+    try:
+        return (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+def is_youtube(url):
+    h = _host(url)
+    return h in _YT_HOSTS or h == "youtu.be"
+
+
+def yt_video_id(url):
+    u = urlsplit(url)
+    h = (u.hostname or "").lower()
+    if h == "youtu.be":
+        vid = u.path.strip("/").split("/")[0]
+        return vid or None
+    if h not in _YT_HOSTS:
+        return None
+    if u.path == "/watch":
+        return (parse_qs(u.query).get("v") or [None])[0]
+    m = re.match(r"^/(shorts|live|embed|v)/([\w-]{6,})", u.path)
+    return m.group(2) if m else None
+
+
+def yt_list_id(url):
+    if not is_youtube(url):
+        return None
+    return (parse_qs(urlsplit(url).query).get("list") or [None])[0]
+
+
+def classify_link(url):
+    """'ad' | 'video' | 'playlist' | 'channel' | 'page' (other YouTube pages) | None (not YouTube)."""
+    if AD_HOSTS.search(_host(url)) or "/pagead/" in url or "/aclk?" in url:
+        return "ad"
+    if not is_youtube(url):
+        return None
+    vid, lst = yt_video_id(url), yt_list_id(url)
+    path = urlsplit(url).path
+    if path == "/playlist" and lst:
+        return "playlist"
+    if vid:
+        return "video"
+    if _YT_TAB.match(path):
+        return "channel"
+    return "page"
+
+
+def yt_video_url(url):
+    vid = yt_video_id(url)
+    return f"https://www.youtube.com/watch?v={vid}" if vid else url
+
+
+def yt_playlist_url(url):
+    lst = yt_list_id(url)
+    vid = yt_video_id(url)
+    if lst and lst.startswith(("RD", "UL")) and vid:     # mixes need a starting video
+        return f"https://www.youtube.com/watch?v={vid}&list={lst}"
+    return f"https://www.youtube.com/playlist?list={lst}" if lst else url
+
+
+def is_collection_url(url):
+    """A URL that is a list of videos (playlist, mix, channel tab), not one video."""
+    kind = classify_link(url)
+    return kind in ("playlist", "channel")
+
+
+def flat_playlist(url, settings, cookie_jar=None, limit=500, timeout=180):
+    """List a playlist / mix / channel tab without downloading every video page.
+    Returns {"title", "entries": [{"url", "title", "duration", "kind": "video"|"playlist"}]}"""
+    ensure_tools(settings)
+    jar = write_cookie_jar(cookie_jar) if cookie_jar else None
+    args = _base_args(settings) + (["--cookies", jar] if jar else []) + \
+        ["-J", "--flat-playlist", "--yes-playlist", "--playlist-end", str(limit), url]
+    try:
+        p = subprocess.run(args, capture_output=True, text=True, timeout=timeout, env=_env())
+    except subprocess.TimeoutExpired:
+        raise MediaError("yt-dlp timed out while reading the playlist")
+    finally:
+        _remove(jar)
+    if p.returncode != 0 or not p.stdout.strip():
+        err = [ln for ln in p.stderr.splitlines() if "ERROR" in ln]
+        raise MediaError((err[-1] if err else p.stderr.strip()[-300:]) or "yt-dlp failed")
+    info = json.loads(p.stdout)
+    return flat_entries(info)
+
+
+def flat_entries(info):
+    out = []
+    for e in info.get("entries") or []:
+        if not isinstance(e, dict):
+            continue
+        u = e.get("url") or e.get("webpage_url") or ""
+        if u and not u.startswith("http") and e.get("id"):
+            u = f"https://www.youtube.com/watch?v={e['id']}"
+        if not u:
+            continue
+        is_list = e.get("ie_key") == "YoutubeTab" or e.get("_type") == "playlist" or \
+            (yt_list_id(u) and not yt_video_id(u))
+        out.append({"url": u if is_list else yt_video_url(u), "title": e.get("title") or e.get("id") or u,
+                    "duration": e.get("duration") or 0, "kind": "playlist" if is_list else "video",
+                    "count": e.get("playlist_count") or 0})
+    title = info.get("title") or info.get("playlist_title") or ""
+    if info.get("_type") != "playlist" and not out and info.get("id"):
+        out.append({"url": info.get("webpage_url") or "", "title": title, "duration": info.get("duration") or 0,
+                    "kind": "video", "count": 0})
+    return {"title": title, "entries": out}
+
+
+def pick_size(options, preset):
+    """Size of the option a quality preset would download (for the links dialog)."""
+    if not options:
+        return 0, True
+    want = preset[4]
+    if want in ("audio", "mp3"):
+        o = next((o for o in options if o["type"] == ("mp3" if want == "mp3" else "audio")), None)
+    else:
+        vids = [o for o in options if o["type"] == "video"]
+        if want:
+            vids = [o for o in vids if (o.get("height") or 0) <= want] or vids[-1:]
+        o = vids[0] if vids else None
+    return ((o or {}).get("size") or 0), (o or {}).get("approx", True)

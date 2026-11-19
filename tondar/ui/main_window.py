@@ -483,6 +483,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self.new_download({"url": url, "headers": headers})
 
     def new_download(self, req):
+        from ..media import is_collection_url
+        if is_collection_url(req.get("url", "")):
+            # a playlist / channel page: list its videos instead of probing one file
+            self.on_browser_links([{"url": req["url"], "referer": req.get("referer", ""), "page": True}],
+                                  "Download playlist")
+            return
         dup = self.m.find_duplicate(req["url"])
         if dup and dup.status != COMPLETED and not req.get("media_option"):
             r = QtWidgets.QMessageBox.question(
@@ -698,6 +704,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def on_browser_media(self, data):
         url = data.get("url")
+        from ..media import is_collection_url
+        if is_collection_url(url or ""):
+            self.on_browser_links([{"url": url, "referer": data.get("referer", ""), "page": True}],
+                                  "Download playlist")
+            return
         info = self.media_cache.get(url)
         title = (data.get("title") or "").strip()
         if info and title:
@@ -706,7 +717,8 @@ class MainWindow(QtWidgets.QMainWindow):
         req = {"url": url, "media": True, "media_info": info, "media_option": data.get("format"),
                "referer": data.get("referer", ""), "cookies": data.get("cookies", ""),
                "user_agent": data.get("userAgent", ""), "title": title,
-               "headers": {"Origin": data["origin"]} if data.get("origin") else {}}
+               "headers": {"Origin": data["origin"]} if data.get("origin") else {},
+               "cookie_jar": data.get("cookie_jar") if isinstance(data.get("cookie_jar"), list) else None}
         if self.s["show_file_info_dialog"] or not info:
             self.new_download(req)
             return
@@ -716,7 +728,8 @@ class MainWindow(QtWidgets.QMainWindow):
         it = self.m.new_item(url, media_filename(info["title"], o["ext"]), category=cat, kind=KIND_MEDIA,
                              media_format=o["id"], media_title=info["title"], size=o.get("size") or -1,
                              page_url=url, referer=req["referer"], cookies=req["cookies"],
-                             user_agent=req["user_agent"], headers=dict(req["headers"]))
+                             user_agent=req["user_agent"], headers=dict(req["headers"]),
+                             cookie_jar=req["cookie_jar"])
         self.m.add(it, start=True)
         if self.s["show_progress_dialog"]:
             self.show_progress(it.id)
@@ -729,8 +742,37 @@ class MainWindow(QtWidgets.QMainWindow):
         if not dialog_accepted(exec_(dlg)):
             return
         from urllib.parse import unquote
+        from ..media import media_filename
+        from ..engine import sanitize_filename
         added = 0
+        preset = dlg.preset()
+        seen = set()
         for l in dlg.selected_links():
+            if l.get("yt") in ("video", "playlist"):
+                try:
+                    QtWidgets.QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+                    videos = dlg.yt_videos(l)
+                except Exception as e:  # noqa: BLE001
+                    QtWidgets.QMessageBox.warning(self, APP_NAME, f"Could not read the playlist:\n{e}")
+                    videos = []
+                finally:
+                    QtWidgets.QApplication.restoreOverrideCursor()
+                label, fmt, ext, cat, _ = preset
+                for v in videos:
+                    if v["url"] in seen:
+                        continue
+                    seen.add(v["url"])
+                    folder = self.s.dir_for_category(cat)
+                    name = v["title"]
+                    if v.get("list_title"):
+                        folder = folder / sanitize_filename(v["list_title"])[:100]
+                        name = f"{v['list_index']:02d} - {name}"
+                    it = self.m.new_item(v["url"], media_filename(name, ext), str(folder), cat, kind=KIND_MEDIA,
+                                         media_format=fmt, media_title=v["title"], page_url=v["url"],
+                                         size=(l.get("size") or -1) if l.get("yt") == "video" else -1)
+                    self.m.add(it, start=False, queue=MAIN_QUEUE)
+                    added += 1
+                continue
             url = l["url"]
             h = dlg._headers_for(l)
             common = dict(referer=h.get("Referer", ""), cookies=l.get("cookies", ""),

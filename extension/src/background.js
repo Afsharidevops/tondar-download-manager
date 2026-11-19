@@ -53,6 +53,17 @@ function updateBadge() {
   action.setBadgeBackgroundColor({ color: "#c62828" });
 }
 
+// full cookie objects (domain/path/expiry), so yt-dlp can use them on every sub-domain
+async function cookieJar(url) {
+  try {
+    const list = await B.cookies.getAll({ url });
+    return list.map((c) => ({ domain: c.domain, path: c.path, secure: c.secure, hostOnly: c.hostOnly,
+                              expires: Math.floor(c.expirationDate || 0), name: c.name, value: c.value }));
+  } catch (e) {
+    return [];
+  }
+}
+
 async function cookiesFor(url) {
   try {
     const list = await B.cookies.getAll({ url });
@@ -199,14 +210,17 @@ B.runtime.onMessage.addListener((msg, sender, reply) => {
         reply(await api("/media/formats", { url: msg.url }, 120000));
       } else if (msg.type === "resolve") {
         const cookies = await cookiesFor(msg.page);
+        const cookie_jar = await cookieJar(msg.page);
         // players often live in an <iframe> without a title: use the tab's title then
         reply(await api("/media/resolve", { page: msg.page, title: msg.title || sender.tab?.title || "",
-                                            streams: msg.streams,
-                                            files: msg.files, referer: msg.page, cookies }, 180000));
+                                            streams: msg.streams, files: msg.files, referer: msg.page,
+                                            cookies, cookie_jar }, 180000));
       } else if (msg.type === "media-download") {
         const ref = msg.referer || sender.tab?.url || "";
         const cookies = await cookiesFor(msg.url);
+        const cookie_jar = msg.url === msg.page ? await cookieJar(msg.url) : null;
         reply(await api("/media/download", { url: msg.url, format: msg.format, referer: msg.referer || "",
+                                             cookie_jar,
                                              origin: msg.origin || "",
                                              title: msg.title || (msg.url !== msg.page ? sender.tab?.title : "") || "",
                                              cookies,

@@ -128,6 +128,7 @@ class ApiServer:
         page = data.get("page", "")
         referer = data.get("referer") or page
         cookies = data.get("cookies", "")
+        jar = data.get("cookie_jar") if isinstance(data.get("cookie_jar"), list) else None
         def norm(x):
             # old extension versions send plain URLs, new ones {url, referer, origin}
             if isinstance(x, str):
@@ -139,12 +140,13 @@ class ApiServer:
         files = [y for y in map(norm, data.get("files", [])) if y][:12]
         s = self.settings
 
-        def media(url, ref, origin=""):
+        def media(url, ref, origin="", use_jar=False):
             key = (url, ref, origin)
             if key in self.media_cache:
                 return self.media_cache[key]
             res = probe_media(url, s, referer=ref, cookies=cookies,
-                              headers={"Origin": origin} if origin else None)
+                              headers={"Origin": origin} if origin else None,
+                              cookie_jar=jar if use_jar else None)
             self.media_cache[key] = res
             self.media_cache[url] = res
             return res
@@ -158,16 +160,18 @@ class ApiServer:
             return http_probe(x["url"], h, s["proxy"], s["use_system_proxy"], 15)
 
         with ThreadPoolExecutor(max_workers=6) as pool:
-            fut_page = pool.submit(media, page, "") if page else None
+            fut_page = pool.submit(media, page, "", "", True) if page else None
             fut_streams = [(x, pool.submit(media, x["url"], x["referer"], x["origin"])) for x in streams]
             fut_files = [(x, pool.submit(file_info, x)) for x in files]
             errors = []
             page_res = None
+            page_error = ""
             if fut_page:
                 try:
                     page_res = fut_page.result()
                 except Exception as e:  # noqa: BLE001
                     errors.append(str(e))
+                    page_error = str(e).replace("ERROR: ", "")
             entries = []
             title = data.get("title") or ""
             if page_res and page_res.get("options"):
@@ -211,6 +215,9 @@ class ApiServer:
                                     "size": info["size"], "approx": False, "kind": "file",
                                     "referer": x["referer"], "origin": x["origin"]})
         out = {"title": title, "entries": entries}
+        if not (page_res and page_res.get("options")) and page_error and \
+                "Unsupported URL" not in page_error and "generic" not in page_error.lower():
+            out["page_error"] = page_error[:300]
         if not entries:
             out["error"] = errors[0] if errors else "No downloadable video found on this page"
         return out

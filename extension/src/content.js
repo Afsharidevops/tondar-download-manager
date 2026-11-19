@@ -67,6 +67,7 @@
         .it .sz{color:#7a8794}.it:hover .sz{color:#e3edfb}
         .msg{padding:10px 12px;color:#556;white-space:normal}
         .err{color:#b3261e}
+        .note{padding:2px 12px 6px;font-size:11px;color:#8a5a00}
         .spin{display:inline-block;width:12px;height:12px;border:2px solid #9fb6d0;border-top-color:#1f6fd8;
               border-radius:50%;animation:s 1s linear infinite;vertical-align:-2px;margin-right:6px}
         @keyframes s{to{transform:rotate(360deg)}}
@@ -181,6 +182,13 @@
       return;
     }
     menu.appendChild(el("div", "head", "Download with Tondar"));
+    if (data.page_error) {
+      const n = el("div", "msg note", /log ?in|login|cookies|private|rate/i.test(data.page_error)
+        ? "This site needs you to be logged in. Showing the files the page loaded instead."
+        : "Could not read this page directly; showing the files it loaded.");
+      n.title = data.page_error;
+      menu.appendChild(n);
+    }
     if (data.title) {
       const t = el("div", "title", data.title);
       t.dir = "auto";
@@ -205,6 +213,18 @@
       });
       menu.appendChild(row);
     }
+    addPlaylistRow();
+  }
+
+  function addPlaylistRow() {
+    let list = null;
+    try { list = new URL(location.href).searchParams.get("list"); } catch (e) { /* ignore */ }
+    if (!list || !/(^|\.)youtube\.com$/i.test(location.hostname)) return;
+    menu.appendChild(el("div", "head", "Playlist"));
+    const row = el("div", "it");
+    row.append(el("span", "nm", "Download the whole playlist…"), el("span", "sz", ""));
+    row.addEventListener("click", () => act({ type: "links", links: [{ url: location.href, referer: location.href, page: true }] }));
+    menu.appendChild(row);
   }
 
   async function act(msg) {
@@ -288,12 +308,14 @@
       anchors = anchors.filter((a) => range.intersectsNode(a));
     }
     const seen = new Set();
-    const links = [];
+    // the page itself first: if it is a playlist / mix / channel, Tondar lists all of it
+    const links = [{ url: location.href, referer: location.href, page: true }];
     for (const a of anchors) {
       const u = a.href;
       if (!/^(https?|ftp):/i.test(u) || seen.has(u)) continue;
       seen.add(u);
-      links.push({ url: u, referer: location.href });
+      const text = (a.getAttribute("title") || a.textContent || "").replace(/\s+/g, " ").trim().slice(0, 150);
+      links.push({ url: u, referer: location.href, text });
     }
     send({ type: "links", links });
   }
