@@ -682,14 +682,16 @@ class MainWindow(QtWidgets.QMainWindow):
     def on_browser_download(self, data):
         req = {"url": data.get("url"), "referer": data.get("referer", ""),
                "cookies": data.get("cookies", ""), "filename": data.get("filename", ""),
-               "user_agent": data.get("userAgent", ""), "forced_file": True}
+               "user_agent": data.get("userAgent", ""), "forced_file": True,
+               "headers": {"Origin": data["origin"]} if data.get("origin") else {}}
         if self.s["show_file_info_dialog"]:
             self.new_download(req)
         else:
             from urllib.parse import unquote, urlsplit
             name = req["filename"] or unquote(urlsplit(req["url"]).path.rstrip("/").rsplit("/", 1)[-1]) or "download"
             it = self.m.new_item(req["url"], name, referer=req["referer"], cookies=req["cookies"],
-                                 user_agent=req["user_agent"], auto_name=not req["filename"])
+                                 user_agent=req["user_agent"], auto_name=not req["filename"],
+                                 headers=dict(req["headers"]))
             self.m.add(it, start=True)
             if self.s["show_progress_dialog"]:
                 self.show_progress(it.id)
@@ -703,7 +705,8 @@ class MainWindow(QtWidgets.QMainWindow):
             info = dict(info, title=title)
         req = {"url": url, "media": True, "media_info": info, "media_option": data.get("format"),
                "referer": data.get("referer", ""), "cookies": data.get("cookies", ""),
-               "user_agent": data.get("userAgent", ""), "title": title}
+               "user_agent": data.get("userAgent", ""), "title": title,
+               "headers": {"Origin": data["origin"]} if data.get("origin") else {}}
         if self.s["show_file_info_dialog"] or not info:
             self.new_download(req)
             return
@@ -713,7 +716,7 @@ class MainWindow(QtWidgets.QMainWindow):
         it = self.m.new_item(url, media_filename(info["title"], o["ext"]), category=cat, kind=KIND_MEDIA,
                              media_format=o["id"], media_title=info["title"], size=o.get("size") or -1,
                              page_url=url, referer=req["referer"], cookies=req["cookies"],
-                             user_agent=req["user_agent"])
+                             user_agent=req["user_agent"], headers=dict(req["headers"]))
         self.m.add(it, start=True)
         if self.s["show_progress_dialog"]:
             self.show_progress(it.id)
@@ -729,9 +732,17 @@ class MainWindow(QtWidgets.QMainWindow):
         added = 0
         for l in dlg.selected_links():
             url = l["url"]
-            common = dict(referer=l.get("referer", ""), cookies=l.get("cookies", ""),
-                          user_agent=l.get("user_agent", ""), description=l.get("description", ""))
-            if l.get("kind") == KIND_MEDIA:
+            h = dlg._headers_for(l)
+            common = dict(referer=h.get("Referer", ""), cookies=l.get("cookies", ""),
+                          user_agent=l.get("user_agent", ""), description=l.get("description", ""),
+                          headers={"Origin": h["Origin"]} if "Origin" in h else {})
+            if "_stream" in l or (dlg.STREAM_RE.search(url) and l.get("kind") != KIND_MEDIA):
+                best = l.get("_stream") or {}
+                name = l.get("filename") or (dlg._name_from_url(url).rsplit(".", 1)[0] + ".mp4")
+                it = self.m.new_item(url, name, l.get("save_dir"), "Video", kind=KIND_MEDIA,
+                                     media_format=best.get("id") or "bv*+ba/b", media_title=name.rsplit(".", 1)[0],
+                                     page_url=url, size=best.get("size") or -1, **common)
+            elif l.get("kind") == KIND_MEDIA:
                 name = l.get("filename") or "video.mp4"
                 it = self.m.new_item(url, name, l.get("save_dir"), l.get("category"), kind=KIND_MEDIA,
                                      media_format=l.get("media_format", ""), media_title=l.get("media_title", ""),

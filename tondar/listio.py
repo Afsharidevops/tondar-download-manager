@@ -86,12 +86,23 @@ def import_file(path):
 
 
 def parse_txt(text):
+    """Plain URLs anywhere in the text, plus "file-name|url" lines (name chosen by the user)."""
     seen, out = set(), []
-    for u in URL_RE.findall(text):
-        u = u.rstrip(").,;]")
-        if u not in seen:
-            seen.add(u)
-            out.append({"url": u})
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        name = ""
+        if "|" in line:
+            left, right = line.split("|", 1)
+            if URL_RE.match(right.strip()) and not URL_RE.search(left):
+                name, line = os.path.basename(left.strip()), right.strip()
+        for u in URL_RE.findall(line):
+            u = u.rstrip(").,;]")
+            if u not in seen:
+                seen.add(u)
+                out.append({"url": u, "filename": name} if name else {"url": u})
+                name = ""
     return out
 
 

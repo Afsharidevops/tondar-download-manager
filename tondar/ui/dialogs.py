@@ -1047,6 +1047,20 @@ class LinksDialog(QtWidgets.QDialog):
         top.addWidget(self.show_pages)
         lay.addLayout(top)
 
+        refrow = QtWidgets.QHBoxLayout()
+        refrow.addWidget(QtWidgets.QLabel("Referer:"))
+        self.referer = QtWidgets.QLineEdit()
+        self.referer.setPlaceholderText("optional - the page/player the links come from, e.g. https://player.arvancloud.ir/")
+        refs = {l.get("referer", "") for l in links}
+        if len(refs) == 1:
+            self.referer.setText(refs.pop())
+        refrow.addWidget(self.referer, 1)
+        self.recheck = QtWidgets.QPushButton("Apply && recheck")
+        self.recheck.setAutoDefault(False)
+        self.recheck.clicked.connect(self._recheck)
+        refrow.addWidget(self.recheck)
+        lay.addLayout(refrow)
+
         self.tree = QtWidgets.QTreeWidget()
         self.tree.setHeaderLabels(self.COLS)
         self.tree.setRootIsDecorated(False)
@@ -1110,28 +1124,72 @@ class LinksDialog(QtWidgets.QDialog):
         self.sig = _ProbeSignals(self)
         self.sig.result.connect(self._on_result)
         self.pool = ThreadPoolExecutor(max_workers=self.WORKERS)
+        self.generation = 0
+        self._start_probes()
+
+    STREAM_RE = re.compile(r"\.(m3u8|mpd)(\?|#|$)", re.I)
+
+    def _headers_for(self, l):
+        """Referer from the field (applies to every link) or the link itself; browsers also send
+        Origin on cross-site player requests, and some CDNs insist on it."""
+        h = {"User-Agent": l.get("user_agent") or self.s["user_agent"]}
+        ref = self.referer.text().strip() or l.get("referer", "")
+        if ref:
+            h["Referer"] = ref
+            u = urllib.parse.urlsplit(ref)
+            if u.scheme and u.netloc and self.referer.text().strip():
+                h["Origin"] = f"{u.scheme}://{u.netloc}"
+        if l.get("origin"):
+            h["Origin"] = l["origin"]
+        if l.get("cookies"):
+            h["Cookie"] = l["cookies"]
+        return h
+
+    def _start_probes(self):
+        from ..engine import probe
+        from ..media import probe_media
+        self.generation += 1
+        gen = self.generation
+        self.n_done = 0
         timeout = min(12, self.s["timeout"])
         for i, l in enumerate(self.links):
-            if l.get("kind") == KIND_MEDIA:
+            if l.get("kind") == KIND_MEDIA and l.get("media_format"):
                 self.n_done += 1
                 continue
-            headers = {"User-Agent": l.get("user_agent") or self.s["user_agent"]}
-            if l.get("referer"):
-                headers["Referer"] = l["referer"]
-            if l.get("cookies"):
-                headers["Cookie"] = l["cookies"]
+            headers = self._headers_for(l)
+            stream = bool(self.STREAM_RE.search(l["url"]))
+            if stream:
+                l["_item"].setText(2, "checking...")
 
-            def job(i=i, url=l["url"], headers=headers):
-                if self.closed:
+            def job(i=i, url=l["url"], headers=headers, stream=stream):
+                if self.closed or gen != self.generation:
                     return
                 try:
-                    info = probe(url, headers, self.s["proxy"], self.s["use_system_proxy"], timeout)
+                    if stream:
+                        res = probe_media(url, self.s, referer=headers.get("Referer", ""),
+                                          cookies=headers.get("Cookie", ""),
+                                          headers={"Origin": headers["Origin"]} if "Origin" in headers else None)
+                        info = {"stream": res}
+                    else:
+                        info = probe(url, headers, self.s["proxy"], self.s["use_system_proxy"], timeout)
                 except Exception as e:  # noqa: BLE001
-                    info = {"error": str(e)[:120]}
-                if not self.closed:
+                    info = {"error": str(e)[:200]}
+                if not self.closed and gen == self.generation:
                     self.sig.result.emit(i, info)
             self.pool.submit(job)
         self._update_status()
+
+    def _recheck(self):
+        self.tree.blockSignals(True)
+        for l in self.links:
+            for k in ("_page", "_info", "_stream"):
+                l.pop(k, None)
+            it = l["_item"]
+            it.setText(2, "checking...")
+            it.setForeground(2, self.tree.palette().text())
+            it.setToolTip(2, "")
+        self.tree.blockSignals(False)
+        self._start_probes()
 
     # --------------------------------------------------------------
     @staticmethod
@@ -1161,6 +1219,25 @@ class LinksDialog(QtWidgets.QDialog):
             l["_page"] = None
             if i not in self.touched:
                 it.setCheckState(0, Qt.CheckState.Unchecked)
+        elif "stream" in info:
+            res = info["stream"]
+            best = res["options"][0] if res.get("options") else None
+            l["_page"] = False
+            l["_stream"] = best
+            if not l.get("filename"):
+                base = self._name_from_url(l["url"]).rsplit(".", 1)[0]
+                l["filename"] = f"{base}.{best['ext'] if best else 'mp4'}"
+                it.setText(0, l["filename"])
+            it.setIcon(0, icons.icon("Video"))
+            size = (best or {}).get("size") or 0
+            l["size"] = size
+            it.setText(1, (("~" if best and best.get("approx") else "") + human_size(size)) if size else "")
+            it.setData(1, Qt.ItemDataRole.UserRole, size)
+            q = f" {best['height']}p" if best and best.get("height") else ""
+            it.setText(2, "Video stream" + q)
+            it.setForeground(2, self.tree.palette().text())
+            if i not in self.touched:
+                it.setCheckState(0, Qt.CheckState.Checked)
         else:
             ctype = (info.get("content_type") or "").split(";")[0].strip().lower()
             page = ctype in ("text/html", "application/xhtml+xml")

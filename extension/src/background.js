@@ -73,10 +73,10 @@ function baseName(p) {
   return (p || "").split(/[\\/]/).pop();
 }
 
-async function sendDownload(url, referer, filename) {
+async function sendDownload(url, referer, filename, origin) {
   const cookies = await cookiesFor(url);
-  return api("/download", { url, referer: referer || "", filename: filename || "", cookies,
-                            userAgent: navigator.userAgent });
+  return api("/download", { url, referer: referer || "", origin: origin || "", filename: filename || "",
+                            cookies, userAgent: navigator.userAgent });
 }
 
 /* ---------------------------------------------------------------- downloads */
@@ -119,8 +119,36 @@ function header(headers, name) {
   return h ? h.value : "";
 }
 
+/* Remember the Referer / Origin the browser really sent for each request: CDNs such as
+ * arvanvod.ir only serve the full video to requests that come from their own player
+ * (often an <iframe> on another domain), so downloads must repeat these headers. */
+const sentHeaders = new Map();          // requestId -> {referer, origin}
+const SNIFF_TYPES = ["media", "xmlhttprequest", "other", "object"];
+
+function originOf(u) {
+  try { return new URL(u).origin; } catch (e) { return ""; }
+}
+
+function onSend(d) {
+  if (d.tabId < 0) return;
+  const h = { referer: header(d.requestHeaders, "referer"), origin: header(d.requestHeaders, "origin") };
+  if (h.referer || h.origin) {
+    sentHeaders.set(d.requestId, h);
+    if (sentHeaders.size > 2000) sentHeaders.delete(sentHeaders.keys().next().value);
+  }
+}
+try {   // Chrome needs "extraHeaders" to expose Referer/Origin; Firefox has no such option
+  B.webRequest.onSendHeaders.addListener(onSend, { urls: ["<all_urls>"], types: SNIFF_TYPES },
+                                         ["requestHeaders", "extraHeaders"]);
+} catch (e) {
+  B.webRequest.onSendHeaders.addListener(onSend, { urls: ["<all_urls>"], types: SNIFF_TYPES }, ["requestHeaders"]);
+}
+B.webRequest.onErrorOccurred.addListener((d) => sentHeaders.delete(d.requestId), { urls: ["<all_urls>"] });
+
 B.webRequest.onHeadersReceived.addListener(
   (d) => {
+    const sent = sentHeaders.get(d.requestId) || {};
+    sentHeaders.delete(d.requestId);
     if (d.tabId < 0 || d.statusCode >= 400) return;
     let host = "";
     try { host = new URL(d.url).hostname; } catch (e) { return; }
@@ -139,10 +167,18 @@ B.webRequest.onHeadersReceived.addListener(
     const m = tabMedia.get(d.tabId);
     const key = isPlaylist ? d.url : d.url.split("?")[0];
     if (m.has(key)) return;
-    m.set(key, { url: d.url, kind, size, mime });
+    // what the page that made the request looks like to the server
+    const docUrl = d.documentUrl || d.originUrl || (d.initiator ? d.initiator + "/" : "");
+    const docOrigin = d.initiator || originOf(docUrl);
+    const crossOrigin = docOrigin && docOrigin !== originOf(d.url);
+    m.set(key, {
+      url: d.url, kind, size, mime,
+      referer: sent.referer || (crossOrigin ? docOrigin + "/" : docUrl),
+      origin: sent.origin || (crossOrigin && d.type === "xmlhttprequest" ? docOrigin : ""),
+    });
     B.tabs.sendMessage(d.tabId, { type: "tondar-media", items: [...m.values()] }).catch(() => {});
   },
-  { urls: ["<all_urls>"], types: ["media", "xmlhttprequest", "other", "object"] },
+  { urls: ["<all_urls>"], types: SNIFF_TYPES },
   ["responseHeaders"]
 );
 
@@ -163,16 +199,20 @@ B.runtime.onMessage.addListener((msg, sender, reply) => {
         reply(await api("/media/formats", { url: msg.url }, 120000));
       } else if (msg.type === "resolve") {
         const cookies = await cookiesFor(msg.page);
-        reply(await api("/media/resolve", { page: msg.page, title: msg.title, streams: msg.streams,
+        // players often live in an <iframe> without a title: use the tab's title then
+        reply(await api("/media/resolve", { page: msg.page, title: msg.title || sender.tab?.title || "",
+                                            streams: msg.streams,
                                             files: msg.files, referer: msg.page, cookies }, 180000));
       } else if (msg.type === "media-download") {
         const ref = msg.referer || sender.tab?.url || "";
         const cookies = await cookiesFor(msg.url);
         reply(await api("/media/download", { url: msg.url, format: msg.format, referer: msg.referer || "",
-                                             title: msg.title || "", cookies, userAgent: navigator.userAgent,
-                                             pageUrl: ref }));
+                                             origin: msg.origin || "",
+                                             title: msg.title || (msg.url !== msg.page ? sender.tab?.title : "") || "",
+                                             cookies,
+                                             userAgent: navigator.userAgent, pageUrl: ref }));
       } else if (msg.type === "file-download") {
-        reply(await sendDownload(msg.url, msg.referer, msg.filename || ""));
+        reply(await sendDownload(msg.url, msg.referer, msg.filename || "", msg.origin || ""));
       } else if (msg.type === "sniffed") {
         const m = tabMedia.get(sender.tab?.id);
         reply({ items: m ? [...m.values()] : [] });

@@ -90,7 +90,9 @@
       toggleMenu();
     });
     menu.addEventListener("click", (e) => e.stopPropagation());
-    document.addEventListener("click", () => closeMenu(), true);
+    document.addEventListener("click", (e) => {
+      if (!e.composedPath().includes(host)) closeMenu();     // clicks inside the panel keep it open
+    }, true);
     (document.documentElement || document.body).appendChild(host);
   }
 
@@ -143,16 +145,25 @@
     loading.append(spin, "Finding videos on this page...");
     menu.appendChild(loading);
 
-    // what the tab has played so far + the current <video>/<audio> source
+    // what the tab has played so far (with the headers the browser sent) + the current <video> source
     const streams = [], files = [];
-    for (const s of sniffed) (s.kind === "stream" ? streams : files).push(s.url);
+    for (const s of sniffed) {
+      (s.kind === "stream" ? streams : files).push({ url: s.url, referer: s.referer || "", origin: s.origin || "" });
+    }
     for (const m of document.querySelectorAll("video, audio, video source, audio source")) {
       const src = m.currentSrc || m.src;
       if (src && /^https?:/i.test(src)) {
-        (/\.(m3u8|mpd)(\?|$)/i.test(src) ? streams : files).push(src);
+        let cross = true;
+        try { cross = new URL(src).origin !== location.origin; } catch (e) { /* ignore */ }
+        const ref = { url: src, referer: cross ? location.origin + "/" : location.href, origin: "" };
+        (/\.(m3u8|mpd)(\?|$)/i.test(src) ? streams : files).push(ref);
       }
     }
-    const uniq = (a) => [...new Set(a)].slice(-12);
+    const uniq = (a) => {
+      const seen = new Map();
+      for (const x of a) if (!seen.has(x.url)) seen.set(x.url, x);
+      return [...seen.values()].slice(-12);
+    };
     const req = { type: "resolve", page: pageUrl, title: document.title, streams: uniq(streams).reverse(),
                   files: uniq(files).reverse() };
     const key = JSON.stringify(req);
@@ -185,10 +196,11 @@
       row.append(label, el("span", "sz", sizeText(e)));
       row.addEventListener("click", () => {
         if (e.kind === "file") {
-          act({ type: "file-download", url: e.url, referer: e.referer || pageUrl, filename: e.label || "" });
+          act({ type: "file-download", url: e.url, referer: e.referer || pageUrl, origin: e.origin || "",
+                filename: e.label || "" });
         } else {
-          act({ type: "media-download", url: e.url, format: e.format, referer: e.referer || "",
-                title: e.url !== pageUrl ? (data.title || document.title) : "" });
+          act({ type: "media-download", url: e.url, page: pageUrl, format: e.format, referer: e.referer || "",
+                origin: e.origin || "", title: e.url !== pageUrl ? (data.title || document.title) : "" });
         }
       });
       menu.appendChild(row);

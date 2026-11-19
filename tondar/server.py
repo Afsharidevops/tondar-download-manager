@@ -128,27 +128,39 @@ class ApiServer:
         page = data.get("page", "")
         referer = data.get("referer") or page
         cookies = data.get("cookies", "")
-        streams = [s for s in data.get("streams", []) if isinstance(s, str)][:6]
-        files = [f for f in data.get("files", []) if isinstance(f, str)][:12]
+        def norm(x):
+            # old extension versions send plain URLs, new ones {url, referer, origin}
+            if isinstance(x, str):
+                return {"url": x, "referer": referer, "origin": ""}
+            if isinstance(x, dict) and isinstance(x.get("url"), str):
+                return {"url": x["url"], "referer": x.get("referer") or referer, "origin": x.get("origin") or ""}
+            return None
+        streams = [y for y in map(norm, data.get("streams", [])) if y][:6]
+        files = [y for y in map(norm, data.get("files", [])) if y][:12]
         s = self.settings
 
-        def media(url, ref):
-            if url in self.media_cache:
-                return self.media_cache[url]
-            res = probe_media(url, s, referer=ref, cookies=cookies)
+        def media(url, ref, origin=""):
+            key = (url, ref, origin)
+            if key in self.media_cache:
+                return self.media_cache[key]
+            res = probe_media(url, s, referer=ref, cookies=cookies,
+                              headers={"Origin": origin} if origin else None)
+            self.media_cache[key] = res
             self.media_cache[url] = res
             return res
 
-        def file_info(url):
-            h = {"User-Agent": s["user_agent"], "Referer": referer}
+        def file_info(x):
+            h = {"User-Agent": s["user_agent"], "Referer": x["referer"]}
+            if x["origin"]:
+                h["Origin"] = x["origin"]
             if cookies:
                 h["Cookie"] = cookies
-            return http_probe(url, h, s["proxy"], s["use_system_proxy"], 15)
+            return http_probe(x["url"], h, s["proxy"], s["use_system_proxy"], 15)
 
         with ThreadPoolExecutor(max_workers=6) as pool:
             fut_page = pool.submit(media, page, "") if page else None
-            fut_streams = [(u, pool.submit(media, u, referer)) for u in streams]
-            fut_files = [(u, pool.submit(file_info, u)) for u in files]
+            fut_streams = [(x, pool.submit(media, x["url"], x["referer"], x["origin"])) for x in streams]
+            fut_files = [(x, pool.submit(file_info, x)) for x in files]
             errors = []
             page_res = None
             if fut_page:
@@ -165,15 +177,16 @@ class ApiServer:
                                     "approx": o.get("approx", False), "kind": "media"})
             else:
                 seen = {}
-                for u, f in fut_streams:
+                for x, f in fut_streams:
                     try:
                         res = f.result()
                     except Exception as e:  # noqa: BLE001
                         errors.append(str(e))
                         continue
                     for o in res.get("options", []):
-                        e = {"url": u, "format": o["id"], "label": o["label"], "size": o.get("size", 0),
-                             "approx": o.get("approx", False), "kind": "media", "referer": referer,
+                        e = {"url": x["url"], "format": o["id"], "label": o["label"], "size": o.get("size", 0),
+                             "approx": o.get("approx", False), "kind": "media", "referer": x["referer"],
+                             "origin": x["origin"],
                              "height": o.get("height", 0), "type": o.get("type")}
                         # several playlists usually carry the same qualities: keep one per label,
                         # preferring the one with a size
@@ -185,7 +198,7 @@ class ApiServer:
                 if any(e["height"] for e in found):
                     found = [e for e in found if e["height"] or e["type"] != "video"]
                 entries += sorted(found, key=lambda e: (e["type"] != "video", -(e["height"] or 0), -(e["size"] or 0)))
-                for u, f in fut_files:
+                for x, f in fut_files:
                     try:
                         info = f.result()
                     except Exception as e:  # noqa: BLE001
@@ -194,8 +207,9 @@ class ApiServer:
                     ctype = (info.get("content_type") or "").lower()
                     if ctype.startswith(("text/", "image/")):
                         continue
-                    entries.append({"url": u, "format": None, "label": info["filename"], "size": info["size"],
-                                    "approx": False, "kind": "file", "referer": referer})
+                    entries.append({"url": x["url"], "format": None, "label": info["filename"],
+                                    "size": info["size"], "approx": False, "kind": "file",
+                                    "referer": x["referer"], "origin": x["origin"]})
         out = {"title": title, "entries": entries}
         if not entries:
             out["error"] = errors[0] if errors else "No downloadable video found on this page"

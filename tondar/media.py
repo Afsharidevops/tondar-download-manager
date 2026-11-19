@@ -194,8 +194,11 @@ def _env():
 # --------------------------------------------------------------------------
 # probing
 # --------------------------------------------------------------------------
-def _header_args(referer="", cookies="", user_agent=""):
+def _header_args(referer="", cookies="", user_agent="", headers=None):
     args = []
+    for k, v in (headers or {}).items():
+        if v and k.lower() not in ("referer", "cookie", "user-agent"):
+            args += ["--add-header", f"{k}:{v}"]
     if referer:
         args += ["--referer", referer]
     if cookies:
@@ -205,10 +208,10 @@ def _header_args(referer="", cookies="", user_agent=""):
     return args
 
 
-def probe_media(url, settings, playlist=False, timeout=90, referer="", cookies=""):
+def probe_media(url, settings, playlist=False, timeout=90, referer="", cookies="", headers=None):
     """Return {'title','ext','thumbnail','duration','options':[...]}"""
     ensure_tools(settings)
-    args = _base_args(settings) + _header_args(referer, cookies) + \
+    args = _base_args(settings) + _header_args(referer, cookies, headers=headers) + \
         ["-J", "--no-playlist" if not playlist else "--flat-playlist", url]
     try:
         p = subprocess.run(args, capture_output=True, text=True, timeout=timeout, env=_env())
@@ -419,7 +422,7 @@ class MediaDownloader:
                 args += ["-f", it.media_format or "bv*+ba/b"]
                 if "+" in (it.media_format or "+"):
                     args += ["--merge-output-format", ext if ext in ("mp4", "mkv", "webm") else "mp4"]
-            args += _header_args(it.referer, it.cookies, it.user_agent)
+            args += _header_args(it.referer, it.cookies, it.user_agent, it.headers)
             args.append(it.page_url or it.url)
             self.proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                          text=True, env=_env(), bufsize=1,
