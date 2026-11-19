@@ -62,6 +62,7 @@ DEFAULT_SETTINGS = {
     "ytdlp_extra_args": "",
     "temp_dir": "",
     "close_to_tray": True,
+    "notifications": "all",           # all | errors | none  (desktop notifications)
     "categories": DEFAULT_CATEGORIES,
     "scheduler": {
         "enabled": False,

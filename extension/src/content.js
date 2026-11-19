@@ -15,8 +15,6 @@
   let host, root, panel, menu, menuOpen = false, lastUrl = location.href;
   let formatsCache = { url: null, data: null };
 
-  const BOLT = '<svg viewBox="0 0 64 64" width="18" height="18"><path fill="#ffd24a" d="M36 6 16 36h14l-6 22 24-32H34l6-20z"/></svg>';
-
   function send(msg) {
     return new Promise((res) => {
       try {
@@ -75,7 +73,7 @@
                white-space:nowrap;box-shadow:0 4px 14px rgba(0,0,0,.4)}
       </style>
       <div class="wrap">
-        <div class="btn" title="Tondar Download Manager">${BOLT}<span class="lbl">Download this video</span><span class="x" title="Hide">×</span></div>
+        <div class="btn" title="Tondar Download Manager"><svg viewBox="0 0 64 64" width="18" height="18"><path fill="#ffd24a" d="M36 6 16 36h14l-6 22 24-32H34l6-20z"/></svg><span class="lbl">Download this video</span><span class="x" title="Hide">×</span></div>
         <div class="menu"></div>
       </div>`;
     panel = root.querySelector(".btn");

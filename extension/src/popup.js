@@ -9,11 +9,12 @@ async function refresh() {
   $("port").value = s.port;
   B.runtime.sendMessage({ type: "status", force: true }, (r) => {
     const st = $("st");
-    if (r && r.ok) {
-      st.innerHTML = `<span class="ok">● Connected</span> to Tondar ${r.info.version}`;
-    } else {
-      st.innerHTML = '<span class="bad">● Not connected</span> — start Tondar Download Manager';
-    }
+    st.textContent = "";
+    const dot = document.createElement("span");
+    const ok = r && r.ok;
+    dot.className = ok ? "ok" : "bad";
+    dot.textContent = ok ? "● Connected" : "● Not connected";
+    st.append(dot, ok ? ` to Tondar ${r.info.version}` : " — start Tondar Download Manager");
   });
   if (B.permissions && globalThis.browser) {           // Firefox: host access is opt-in
     const has = await B.permissions.contains({ origins: ["<all_urls>"] });

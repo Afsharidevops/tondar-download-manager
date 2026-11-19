@@ -55,8 +55,12 @@ def build(out_root=None):
             man["minimum_chrome_version"] = "110"
         else:
             man["background"] = {"scripts": ["background.js"]}
-            man["browser_specific_settings"] = {"gecko": {"id": "tondar@tondar-dm.local",
-                                                          "strict_min_version": "115.0"}}
+            man["browser_specific_settings"] = {"gecko": {
+                "id": "tondar@tondar-dm.local",
+                "strict_min_version": "140.0",
+                # required by AMO since Nov 2025; the extension only talks to the local app
+                "data_collection_permissions": {"required": ["none"]},
+            }, "gecko_android": {"strict_min_version": "142.0"}}
         with open(os.path.join(out, "manifest.json"), "w") as f:
             json.dump(man, f, indent=2)
     print("built", out_root)

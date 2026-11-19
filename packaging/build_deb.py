@@ -56,8 +56,24 @@ exec /usr/bin/python3 -m tondar "$@"
 
 POSTINST = """#!/bin/sh
 set -e
+if [ "$1" = "configure" ]; then /usr/bin/python3 /usr/lib/tondar/firefox_policy.py install || true; fi
 if command -v update-desktop-database >/dev/null 2>&1; then update-desktop-database -q /usr/share/applications || true; fi
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then gtk-update-icon-cache -q -t /usr/share/icons/hicolor || true; fi
+exit 0
+"""
+
+
+PRERM = """#!/bin/sh
+set -e
+if [ "$1" = "remove" ] || [ "$1" = "deconfigure" ]; then
+    /usr/bin/python3 /usr/lib/tondar/firefox_policy.py remove || true
+fi
+exit 0
+"""
+
+POSTRM = """#!/bin/sh
+set -e
+if command -v update-desktop-database >/dev/null 2>&1; then update-desktop-database -q /usr/share/applications || true; fi
 exit 0
 """
 
@@ -85,6 +101,11 @@ def main():
             for fn in files:
                 full = os.path.join(d, fn)
                 z.write(full, os.path.relpath(full, base))
+    # Mozilla-signed Firefox add-on, installed system-wide through policies.json
+    signed = os.path.join(HERE, "firefox", "tondar-firefox-signed.xpi")
+    if os.path.exists(signed):
+        shutil.copyfile(signed, f"{ext}/tondar-firefox-signed.xpi")
+    shutil.copyfile(os.path.join(HERE, "firefox_policy.py"), f"{PKG}/usr/lib/tondar/firefox_policy.py")
     # icons
     from tondar.qt import QtWidgets
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])  # noqa: F841
@@ -100,7 +121,8 @@ def main():
     size = int(subprocess.check_output(["du", "-sk", f"{PKG}/usr"]).split()[0])
     w(f"{PKG}/DEBIAN/control", CONTROL.replace("{size}", str(size)))
     w(f"{PKG}/DEBIAN/postinst", POSTINST, 0o755)
-    w(f"{PKG}/DEBIAN/postrm", POSTINST, 0o755)
+    w(f"{PKG}/DEBIAN/prerm", PRERM, 0o755)
+    w(f"{PKG}/DEBIAN/postrm", POSTRM, 0o755)
     w(f"{PKG}/DEBIAN/conffiles", "/etc/xdg/autostart/tondar.desktop\n")
     for d, dirs, files in os.walk(PKG):
         for x in dirs:

@@ -432,8 +432,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if status == COMPLETED:
             # downloads that have a progress window open show the "Download complete"
             # dialog from there; everything else gets a desktop notification
-            self.tray.showMessage("Download complete", it.filename, icons.icon("app"), 4000)
-        elif status == ERROR:
+            if self.s.get("notifications", "all") == "all":
+                self.tray.showMessage("Download complete", it.filename, icons.icon("app"), 4000)
+        elif status == ERROR and self.s.get("notifications", "all") in ("all", "errors"):
             self.tray.showMessage("Download failed", f"{it.filename}\n{it.error}", icons.icon("app"), 6000)
 
     def resume_selected(self):

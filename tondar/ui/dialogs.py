@@ -630,9 +630,8 @@ class OptionsDialog(QtWidgets.QDialog):
             "<b>Chrome / Chromium / Brave / Edge / Vivaldi:</b> open <code>chrome://extensions</code>, "
             "turn on <i>Developer mode</i>, click <i>Load unpacked</i> and choose:<br>"
             f"<code>{ext_dir}/chrome</code><br><br>"
-            "<b>Firefox:</b> open <code>about:debugging#/runtime/this-firefox</code> → "
-            "<i>Load Temporary Add-on</i> and choose:<br>"
-            f"<code>{ext_dir}/firefox/manifest.json</code>")
+            "<b>Firefox:</b> installed automatically (system policy). Restart Firefox once, "
+            "then click the Tondar toolbar icon → <i>Allow access to all websites</i>.")
         info.setWordWrap(True)
         info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         f.addWidget(info)
@@ -653,6 +652,16 @@ class OptionsDialog(QtWidgets.QDialog):
         self.complete.setChecked(s["show_complete_dialog"])
         for x in (self.media_panel, self.clip, self.tray, self.fileinfo, self.progress, self.complete):
             f.addWidget(x)
+        nh = QtWidgets.QHBoxLayout()
+        nh.addWidget(QtWidgets.QLabel("Desktop notifications:"))
+        self.notify = QtWidgets.QComboBox()
+        for k, v in (("all", "All (completed and failed downloads)"), ("errors", "Errors only"),
+                     ("none", "None")):
+            self.notify.addItem(v, k)
+        self.notify.setCurrentIndex(max(0, self.notify.findData(s.get("notifications", "all"))))
+        nh.addWidget(self.notify)
+        nh.addStretch(1)
+        f.addLayout(nh)
         f.addStretch(1)
         tabs.addTab(w, "General")
 
@@ -788,6 +797,7 @@ class OptionsDialog(QtWidgets.QDialog):
         s["show_file_info_dialog"] = self.fileinfo.isChecked()
         s["show_progress_dialog"] = self.progress.isChecked()
         s["show_complete_dialog"] = self.complete.isChecked()
+        s["notifications"] = self.notify.currentData()
         s["capture_extensions"] = sorted({e.lower().lstrip(".") for e in self.exts.toPlainText().split() if e})
         s["capture_min_size_kb"] = self.min_size.value()
         s["download_dir"] = self.base.text().strip()

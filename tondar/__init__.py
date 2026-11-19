@@ -2,5 +2,5 @@
 
 APP_NAME = "Tondar Download Manager"
 APP_ID = "tondar"
-VERSION = "1.0.0"
+VERSION = "1.0.2"
 API_PORT = 9614
