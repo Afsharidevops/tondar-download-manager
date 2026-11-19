@@ -22,8 +22,22 @@ import io
 from .config import BIN_DIR, find_tool
 from .engine import build_opener, sanitize_filename
 
-YTDLP_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp"
+YTDLP_BASE = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/"
+YTDLP_ZIPAPP_URL = YTDLP_BASE + "yt-dlp"
 DENO_URL = "https://github.com/denoland/deno/releases/latest/download/deno-{arch}-unknown-linux-gnu.zip"
+
+
+def _arch():
+    return {"x86_64": "x86_64", "amd64": "x86_64", "aarch64": "aarch64",
+            "arm64": "aarch64"}.get(platform.machine().lower())
+
+
+# The standalone build bundles everything yt-dlp can use: pycryptodomex (AES-128
+# encrypted HLS, used by many Iranian VOD services - without it yt-dlp hands the
+# stream to ffmpeg: one connection and no progress), curl_cffi, brotli, websockets.
+STANDALONE = {"x86_64": "yt-dlp_linux", "aarch64": "yt-dlp_linux_aarch64"}.get(_arch() or "")
+STANDALONE_PATH = BIN_DIR / "yt-dlp_linux"
+ZIPAPP_PATH = BIN_DIR / "yt-dlp"
 
 
 class MediaError(Exception):
@@ -34,9 +48,10 @@ class MediaError(Exception):
 # helper binaries
 # --------------------------------------------------------------------------
 def ytdlp_command():
-    p = BIN_DIR / "yt-dlp"
-    if p.exists():
-        return [sys.executable, str(p)]   # zipapp; run with our python
+    if STANDALONE_PATH.exists() and os.access(STANDALONE_PATH, os.X_OK):
+        return [str(STANDALONE_PATH)]
+    if ZIPAPP_PATH.exists():
+        return [sys.executable, str(ZIPAPP_PATH)]   # zipapp; run with our python
     exe = shutil.which("yt-dlp")
     if exe:
         return [exe]
@@ -73,7 +88,7 @@ def ytdlp_version():
         return ""
     try:
         return subprocess.run(cmd + ["--version"], capture_output=True, text=True,
-                              timeout=30).stdout.strip()
+                              timeout=60).stdout.strip()
     except Exception:
         return ""
 
@@ -85,38 +100,52 @@ def _fetch(url, settings, timeout=120):
         return r.read()
 
 
+def _install_file(data, dest):
+    tmp = dest.with_name(dest.name + ".new")
+    tmp.write_bytes(data)
+    tmp.chmod(0o755)
+    os.replace(tmp, dest)
+
+
 def install_tools(settings, log=print, deno=True):
     """Download latest yt-dlp (+ Deno). Raises on failure."""
     BIN_DIR.mkdir(parents=True, exist_ok=True)
-    log("Downloading latest yt-dlp ...")
-    data = _fetch(YTDLP_URL, settings)
-    tmp = BIN_DIR / "yt-dlp.new"
-    tmp.write_bytes(data)
-    tmp.chmod(0o755)
-    os.replace(tmp, BIN_DIR / "yt-dlp")
+    done = False
+    if STANDALONE:
+        log("Downloading latest yt-dlp (standalone build, ~40 MB) ...")
+        try:
+            _install_file(_fetch(YTDLP_BASE + STANDALONE, settings, 600), STANDALONE_PATH)
+            done = True
+            if ZIPAPP_PATH.exists():
+                ZIPAPP_PATH.unlink()
+        except Exception as e:  # noqa: BLE001
+            log(f"Standalone build failed ({e}); using the small Python build instead.")
+    if not done:
+        log("Downloading latest yt-dlp ...")
+        _install_file(_fetch(YTDLP_ZIPAPP_URL, settings), ZIPAPP_PATH)
     log(f"yt-dlp {ytdlp_version()} installed.")
-    if deno and not shutil.which("deno"):
-        arch = {"x86_64": "x86_64", "amd64": "x86_64", "aarch64": "aarch64",
-                "arm64": "aarch64"}.get(platform.machine().lower())
+    if deno and not shutil.which("deno") and not (BIN_DIR / "deno").exists():
+        arch = _arch()
         if not arch:
             log("Deno has no build for this CPU; install nodejs instead (apt install nodejs).")
             return
         log("Downloading Deno JavaScript runtime (needed for YouTube) ...")
         z = zipfile.ZipFile(io.BytesIO(_fetch(DENO_URL.format(arch=arch), settings, 300)))
-        tmp = BIN_DIR / "deno.new"
-        tmp.write_bytes(z.read("deno"))
-        tmp.chmod(0o755)
-        os.replace(tmp, BIN_DIR / "deno")
+        _install_file(z.read("deno"), BIN_DIR / "deno")
         log("Deno installed.")
 
 
 _install_lock = threading.Lock()
 
 
+def _have_own_ytdlp():
+    return STANDALONE_PATH.exists() if STANDALONE else ZIPAPP_PATH.exists()
+
+
 def ensure_tools(settings, log=print):
-    """First use: fetch our own up-to-date yt-dlp (+ Deno when no JS runtime exists)."""
+    """First use (or upgrade from the small build): fetch our own up-to-date yt-dlp."""
     with _install_lock:
-        if (BIN_DIR / "yt-dlp").exists():
+        if _have_own_ytdlp():
             return
         try:
             install_tools(settings, log=log)
@@ -128,12 +157,13 @@ def ensure_tools(settings, log=print):
 
 def auto_update(settings, max_age_days=7):
     """Refresh yt-dlp in the background when it is older than a week (sites change often)."""
-    p = BIN_DIR / "yt-dlp"
-    if p.exists() and time.time() - p.stat().st_mtime > max_age_days * 86400:
+    p = STANDALONE_PATH if STANDALONE_PATH.exists() else ZIPAPP_PATH
+    stale = p.exists() and time.time() - p.stat().st_mtime > max_age_days * 86400
+    if stale or not _have_own_ytdlp():
         def run():
             try:
                 with _install_lock:
-                    install_tools(settings, log=lambda *_: None, deno=False)
+                    install_tools(settings, log=lambda *_: None, deno=not p.exists())
             except Exception:
                 pass
         threading.Thread(target=run, daemon=True).start()
@@ -316,10 +346,35 @@ class MediaDownloader:
         self.cur_bytes = 0
         self.cur_total = 0
         self.last_err = ""
+        self.tail = []              # last lines of yt-dlp output, for error messages
+        self.last_prog = 0.0
+        self.disk_bytes = 0
 
     def start(self):
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
+
+    def _watch_disk(self, base):
+        """Fallback progress: when yt-dlp hands a stream to ffmpeg it reports nothing,
+        so measure the temporary files growing on disk instead."""
+        d = self.item.save_dir
+        while self.proc is None or self.proc.poll() is None:
+            time.sleep(1)
+            if time.monotonic() - self.last_prog < 3:
+                continue
+            total = 0
+            try:
+                for name in os.listdir(d):
+                    if name.startswith(base) and (".part" in name or ".temp" in name or "Frag" in name
+                                                  or name.endswith(".ytdl")):
+                        try:
+                            total += os.path.getsize(os.path.join(d, name))
+                        except OSError:
+                            pass
+            except OSError:
+                pass
+            with self.lock:
+                self.disk_bytes = total
 
     def stop(self):
         self.stopped = True
@@ -331,7 +386,7 @@ class MediaDownloader:
 
     def downloaded(self):
         with self.lock:
-            return sum(self.done_streams.values()) + self.cur_bytes
+            return max(sum(self.done_streams.values()) + self.cur_bytes, self.disk_bytes)
 
     def snapshot(self):
         return []
@@ -342,6 +397,7 @@ class MediaDownloader:
     def _run(self):
         it = self.item
         try:
+            ensure_tools(self.settings, log=lambda *_: None)
             os.makedirs(it.save_dir, exist_ok=True)
             base = os.path.splitext(it.filename)[0]
             ext = os.path.splitext(it.filename)[1].lstrip(".") or "mp4"
@@ -368,16 +424,21 @@ class MediaDownloader:
             self.proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                          text=True, env=_env(), bufsize=1,
                                          start_new_session=True, encoding="utf-8", errors="replace")
+            threading.Thread(target=self._watch_disk, args=(base,), daemon=True).start()
             final_path = None
             for line in self.proc.stdout:
                 line = line.strip()
                 m = PROG_RE.match(line)
                 if m:
+                    self.last_prog = time.monotonic()
                     self._progress(*m.groups())
-                elif line.startswith("TDFILE "):
+                    continue
+                if line.startswith("TDFILE "):
                     final_path = line[7:]
                 elif line.startswith("ERROR"):
                     self.last_err = line
+                if line:
+                    self.tail = (self.tail + [line])[-15:]
             rc = self.proc.wait()
             if self.stopped:
                 self.on_done(self, "stopped", None)
@@ -390,7 +451,8 @@ class MediaDownloader:
                         self.cur_bytes = 0
                 self.on_done(self, "completed", None)
             else:
-                self.on_done(self, "error", self.last_err.replace("ERROR: ", "") or f"yt-dlp exit code {rc}")
+                msg = self.last_err.replace("ERROR: ", "") or (self.tail[-1] if self.tail else "")
+                self.on_done(self, "error", msg or f"yt-dlp exit code {rc}")
         except Exception as e:  # noqa: BLE001
             self.on_done(self, "error", str(e))
 
@@ -409,5 +471,5 @@ class MediaDownloader:
             self.cur_bytes = int(done)
             self.cur_total = int(total or est)
             known = sum(self.done_streams.values()) + self.cur_total
-            if known > self.item.size:
-                self.item.size = known
+            if known > 0 and (self.item.size <= 0 or total):
+                self.item.size = max(known, sum(self.done_streams.values()) + self.cur_bytes)
