@@ -101,7 +101,17 @@ _native = {}          # style name, palette and font before we touched anything
 
 
 def system_is_dark():
-    pal = QtWidgets.QApplication.palette()
+    # Qt 6.5+: the OS setting (Windows dark mode, macOS appearance, GNOME/KDE colour scheme)
+    try:
+        from ..qt import Qt
+        scheme = QtWidgets.QApplication.styleHints().colorScheme()
+        if scheme == Qt.ColorScheme.Dark:
+            return True
+        if scheme == Qt.ColorScheme.Light:
+            return False
+    except AttributeError:
+        pass
+    pal = _native.get("palette") or QtWidgets.QApplication.palette()
     return pal.color(QtGui.QPalette.ColorRole.Window).lightness() < 110
 
 
@@ -123,8 +133,8 @@ def apply(app, name):
         app.setFont(_native["font"])
         return
     if name == "auto":
-        # judge the *system* palette, not the one we may have installed earlier
-        dark = _native["palette"].color(QtGui.QPalette.ColorRole.Window).lightness() < 110
+        # judge the *system* setting, not the palette we may have installed earlier
+        dark = system_is_dark()
     else:
         dark = name == "dark"
     mode = "dark" if dark else "light"

@@ -345,7 +345,7 @@ class HttpDownloader:
                 start = i * step
                 end = size - 1 if i == n - 1 else (i + 1) * step - 1
                 self.segments.append(Segment(start, end))
-        self.fd = os.open(part, os.O_RDWR | os.O_CREAT, 0o644)
+        self.fd = os.open(part, os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o644)
         if os.fstat(self.fd).st_size != size:
             os.ftruncate(self.fd, size)
 
@@ -424,7 +424,7 @@ class HttpDownloader:
                         if allowed <= 0:
                             break
                         data = data[:allowed]
-                        os.pwrite(self.fd, data, pos)
+                        self._write_at(data, pos)
                         with self.lock:
                             seg.pos = min(seg.pos + len(data), seg.end + 1)
                         errors = 0
@@ -440,6 +440,22 @@ class HttpDownloader:
                     raise FatalError("Disk is full")
                 errors += 1
                 self._backoff(errors, retries, e)
+
+    _wlock = None
+
+    def _write_at(self, data, pos):
+        """pwrite() where available (Linux/macOS); Windows has no pwrite, so seek+write under a lock."""
+        if hasattr(os, "pwrite"):
+            os.pwrite(self.fd, data, pos)
+            return
+        if self._wlock is None:
+            self._wlock = threading.Lock()
+        with self._wlock:
+            os.lseek(self.fd, pos, os.SEEK_SET)
+            view = memoryview(data)
+            while view:
+                n = os.write(self.fd, view)
+                view = view[n:]
 
     def _backoff(self, errors, retries, exc):
         if errors > retries:

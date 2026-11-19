@@ -4,7 +4,7 @@
 
 # Tondar Download Manager
 
-A fast, segmented download manager for **Ubuntu 22.04 – 26.04** with browser integration and a **"Download this video"** button for YouTube and other sites. The layout and workflow are familiar to anyone who has used a classic Windows download accelerator.
+A fast, segmented download manager for **Ubuntu 22.04 – 26.04, Windows 10/11 and macOS 12+** with browser integration and a **"Download this video"** button for YouTube and other sites. The layout and workflow are familiar to anyone who has used a classic Windows download accelerator.
 
 ![Main window](docs/screenshots/main-window.png)
 
@@ -35,6 +35,30 @@ A fast, segmented download manager for **Ubuntu 22.04 – 26.04** with browser i
 | ![Progress](docs/screenshots/progress.png) | ![Video panel](docs/screenshots/video-panel.png) |
 
 ## Installation
+
+### Windows 10 / 11
+
+Download **`Tondar-Setup-<version>.exe`** from the [Releases](../../releases/latest) page and run it.
+No administrator rights are needed (it installs for your user; "install for all users" is offered too).
+A portable `.zip` is also available.
+
+The installer is not code-signed, so Windows SmartScreen may show *"Windows protected your PC"*:
+click **More info → Run anyway**.
+
+### macOS 12 (Monterey) or newer
+
+Download the `.dmg` for your Mac from [Releases](../../releases/latest):
+**`…-macOS-apple-silicon.dmg`** for M1/M2/M3/M4 Macs, **`…-macOS-intel.dmg`** for Intel Macs.
+Open it and drag **Tondar** to **Applications**.
+
+The app is not notarized by Apple, so the first launch is blocked:
+- macOS 12–14: right-click **Tondar** in Applications → **Open** → **Open**.
+- macOS 15 and newer: open it once, then **System Settings → Privacy & Security → Open Anyway**.
+- Or in Terminal: `xattr -dr com.apple.quarantine /Applications/Tondar.app`
+
+On Windows and macOS the Firefox add-on is installed from **Options → General → Install in Firefox**.
+
+### Ubuntu
 
 **One-line install** (downloads the latest release and installs it with apt):
 
@@ -102,6 +126,6 @@ tests/             engine, UI and end-to-end browser tests
 
 ## Requirements
 
-- Ubuntu 22.04 or newer (Python 3.10 or newer)
+- Ubuntu 22.04 or newer (Python 3.10 or newer), Windows 10 (1809) or newer (x64), macOS 12 or newer
 - `python3-pyqt6` or `python3-pyqt5`
 - Recommended: `ffmpeg` (merging video and audio, MP3), `python3-socks` (SOCKS proxy)

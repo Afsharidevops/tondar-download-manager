@@ -21,6 +21,7 @@ import io
 
 from .config import BIN_DIR, find_tool
 from .engine import build_opener, sanitize_filename
+from . import osutil
 
 YTDLP_BASE = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/"
 YTDLP_ZIPAPP_URL = YTDLP_BASE + "yt-dlp"
@@ -35,9 +36,23 @@ def _arch():
 # The standalone build bundles everything yt-dlp can use: pycryptodomex (AES-128
 # encrypted HLS, used by many Iranian VOD services - without it yt-dlp hands the
 # stream to ffmpeg: one connection and no progress), curl_cffi, brotli, websockets.
-STANDALONE = {"x86_64": "yt-dlp_linux", "aarch64": "yt-dlp_linux_aarch64"}.get(_arch() or "")
-STANDALONE_PATH = BIN_DIR / "yt-dlp_linux"
-ZIPAPP_PATH = BIN_DIR / "yt-dlp"
+if osutil.IS_WIN:
+    STANDALONE, _LOCAL = "yt-dlp.exe", "yt-dlp.exe"
+elif osutil.IS_MAC:
+    STANDALONE, _LOCAL = "yt-dlp_macos", "yt-dlp_macos"          # universal binary
+else:
+    STANDALONE = {"x86_64": "yt-dlp_linux", "aarch64": "yt-dlp_linux_aarch64"}.get(_arch() or "")
+    _LOCAL = "yt-dlp_linux"
+STANDALONE_PATH = BIN_DIR / _LOCAL
+ZIPAPP_PATH = BIN_DIR / "yt-dlp"          # Linux fallback, runs with the system python
+
+
+def _deno_asset(arch):
+    if osutil.IS_WIN:
+        return "deno-x86_64-pc-windows-msvc.zip", "deno.exe"
+    if osutil.IS_MAC:
+        return f"deno-{arch}-apple-darwin.zip", "deno"
+    return f"deno-{arch}-unknown-linux-gnu.zip", "deno"
 
 
 class MediaError(Exception):
@@ -50,9 +65,12 @@ class MediaError(Exception):
 def ytdlp_command():
     if STANDALONE_PATH.exists() and os.access(STANDALONE_PATH, os.X_OK):
         return [str(STANDALONE_PATH)]
+    if osutil.FROZEN:          # inside the Windows/macOS app sys.executable is Tondar itself
+        exe = osutil.which("yt-dlp")
+        return [exe] if exe else None
     if ZIPAPP_PATH.exists():
         return [sys.executable, str(ZIPAPP_PATH)]   # zipapp; run with our python
-    exe = shutil.which("yt-dlp")
+    exe = osutil.which("yt-dlp")
     if exe:
         return [exe]
     try:
@@ -66,7 +84,7 @@ def js_runtime_args():
     deno = find_tool("deno")
     if deno:
         return ["--js-runtimes", f"deno:{deno}"]
-    node = shutil.which("node") or shutil.which("nodejs")
+    node = osutil.which("node") or osutil.which("nodejs")
     if node:
         return ["--no-js-runtimes", "--js-runtimes", f"node:{node}"]
     return []
@@ -77,8 +95,8 @@ def tools_status():
         "yt-dlp": bool(ytdlp_command()),
         "yt-dlp-version": ytdlp_version(),
         "deno": bool(find_tool("deno")),
-        "node": bool(shutil.which("node") or shutil.which("nodejs")),
-        "ffmpeg": bool(shutil.which("ffmpeg")),
+        "node": bool(osutil.which("node") or osutil.which("nodejs")),
+        "ffmpeg": bool(find_tool("ffmpeg")),
     }
 
 
@@ -88,7 +106,7 @@ def ytdlp_version():
         return ""
     try:
         return subprocess.run(cmd + ["--version"], capture_output=True, text=True,
-                              timeout=60).stdout.strip()
+                              timeout=60, **osutil.subprocess_kwargs()).stdout.strip()
     except Exception:
         return ""
 
@@ -124,14 +142,16 @@ def install_tools(settings, log=print, deno=True):
         log("Downloading latest yt-dlp ...")
         _install_file(_fetch(YTDLP_ZIPAPP_URL, settings), ZIPAPP_PATH)
     log(f"yt-dlp {ytdlp_version()} installed.")
-    if deno and not shutil.which("deno") and not (BIN_DIR / "deno").exists():
+    if deno and not osutil.which("deno") and not (BIN_DIR / osutil.exe("deno")).exists():
         arch = _arch()
         if not arch:
-            log("Deno has no build for this CPU; install nodejs instead (apt install nodejs).")
+            log("Deno has no build for this CPU; install nodejs instead.")
             return
+        asset, member = _deno_asset(arch)
         log("Downloading Deno JavaScript runtime (needed for YouTube) ...")
-        z = zipfile.ZipFile(io.BytesIO(_fetch(DENO_URL.format(arch=arch), settings, 300)))
-        _install_file(z.read("deno"), BIN_DIR / "deno")
+        z = zipfile.ZipFile(io.BytesIO(_fetch(
+            "https://github.com/denoland/deno/releases/latest/download/" + asset, settings, 300)))
+        _install_file(z.read(member), BIN_DIR / member)
         log("Deno installed.")
 
 
@@ -178,7 +198,7 @@ def _base_args(settings, cookies_browser=True):
         args += ["--proxy", settings["proxy"]]
     if cookies_browser and settings.get("ytdlp_cookies_browser"):
         args += ["--cookies-from-browser", settings["ytdlp_cookies_browser"]]
-    ff = shutil.which("ffmpeg")
+    ff = find_tool("ffmpeg")
     if ff:
         args += ["--ffmpeg-location", ff]
     extra = (settings.get("ytdlp_extra_args") or "").split()
@@ -187,7 +207,7 @@ def _base_args(settings, cookies_browser=True):
 
 def _env():
     env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
-    env["PATH"] = f"{BIN_DIR}:{env.get('PATH', '')}"
+    env["PATH"] = os.pathsep.join([str(BIN_DIR), env.get("PATH", "")] + osutil._extra_path())
     return env
 
 
@@ -253,7 +273,8 @@ def probe_media(url, settings, playlist=False, timeout=90, referer="", cookies="
         (["--cookies", jar] if jar else []) + \
         ["-J", "--no-playlist" if not playlist else "--flat-playlist", url]
     try:
-        p = subprocess.run(args, capture_output=True, text=True, timeout=timeout, env=_env())
+        p = subprocess.run(args, capture_output=True, text=True, timeout=timeout, env=_env(),
+                           encoding="utf-8", errors="replace", **osutil.subprocess_kwargs())
     except subprocess.TimeoutExpired:
         raise MediaError("yt-dlp timed out while reading the page")
     finally:
@@ -289,7 +310,7 @@ def build_options(info):
     formats = info.get("formats") or []
     if not formats and info.get("url"):
         formats = [info]
-    has_ffmpeg = bool(shutil.which("ffmpeg"))
+    has_ffmpeg = bool(find_tool("ffmpeg"))
     options = []
 
     audio_only = [f for f in formats if f.get("vcodec") == "none" and f.get("acodec") not in (None, "none")]
@@ -422,11 +443,7 @@ class MediaDownloader:
 
     def stop(self):
         self.stopped = True
-        if self.proc and self.proc.poll() is None:
-            try:
-                os.killpg(self.proc.pid, signal.SIGINT)
-            except Exception:
-                self.proc.terminate()
+        osutil.stop_process(self.proc)
 
     def downloaded(self):
         with self.lock:
@@ -471,7 +488,7 @@ class MediaDownloader:
             args.append(it.page_url or it.url)
             self.proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                          text=True, env=_env(), bufsize=1,
-                                         start_new_session=True, encoding="utf-8", errors="replace")
+                                         encoding="utf-8", errors="replace", **osutil.subprocess_kwargs())
             threading.Thread(target=self._watch_disk, args=(base,), daemon=True).start()
             final_path = None
             for line in self.proc.stdout:
@@ -624,7 +641,8 @@ def flat_playlist(url, settings, cookie_jar=None, limit=500, timeout=180):
     args = _base_args(settings) + (["--cookies", jar] if jar else []) + \
         ["-J", "--flat-playlist", "--yes-playlist", "--playlist-end", str(limit), url]
     try:
-        p = subprocess.run(args, capture_output=True, text=True, timeout=timeout, env=_env())
+        p = subprocess.run(args, capture_output=True, text=True, timeout=timeout, env=_env(),
+                           encoding="utf-8", errors="replace", **osutil.subprocess_kwargs())
     except subprocess.TimeoutExpired:
         raise MediaError("yt-dlp timed out while reading the playlist")
     finally:

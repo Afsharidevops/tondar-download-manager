@@ -4,3 +4,4 @@ dist/
 extension/build/
 *.deb
 .venv/
+build/

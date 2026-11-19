@@ -5,12 +5,27 @@ import socket
 import sys
 import threading
 
-from . import APP_NAME, APP_ID, VERSION
+from . import APP_NAME, APP_ID, VERSION, osutil
 from .qt import QtCore, QtWidgets, exec_
-from .config import Settings, SOCKET_PATH
+from .config import Settings, SOCKET_PATH, DATA_DIR
 
 
 def extension_dir():
+    if osutil.FROZEN:
+        # Windows/macOS build: copy the extensions out of the app bundle to a normal folder
+        # (Chrome's "Load unpacked" cannot browse inside Tondar.app or Program Files reliably)
+        import shutil
+        src = os.path.join(getattr(sys, "_MEIPASS", ""), "extension")
+        dst = DATA_DIR / "extension"
+        stamp = dst / ".version"
+        try:
+            if os.path.isdir(src) and (not stamp.exists() or stamp.read_text() != VERSION):
+                shutil.rmtree(dst, ignore_errors=True)
+                shutil.copytree(src, dst)
+                stamp.write_text(VERSION)
+        except OSError as e:
+            print("could not copy extension:", e)
+        return str(dst)
     for d in (os.environ.get("TONDAR_EXT_DIR"), "/usr/share/tondar/extension",
               os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "extension", "build")):
         if d and os.path.isdir(d):
@@ -18,8 +33,20 @@ def extension_dir():
     return "/usr/share/tondar/extension"
 
 
-def send_to_running(urls):
+def send_to_running(urls, port=None):
     """If another instance is running, hand it our URLs and return True."""
+    if osutil.IS_WIN:      # no Unix sockets: ask the running app through its local API
+        import json
+        import urllib.request
+        try:
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/activate", method="POST",
+                                         data=json.dumps({"urls": urls}).encode(),
+                                         headers={"X-Tondar-Client": "1", "Content-Type": "application/json"})
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            with opener.open(req, timeout=1.5) as r:
+                return json.loads(r.read()).get("app") == "tondar"
+        except Exception:
+            return False
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as c:
             c.settimeout(1)
@@ -31,6 +58,8 @@ def send_to_running(urls):
 
 
 def listen_single_instance(bridge):
+    if osutil.IS_WIN:
+        return None            # handled by the local API (/activate)
     try:
         os.unlink(SOCKET_PATH)
     except OSError:
@@ -64,13 +93,17 @@ def main(argv=None):
     if "--version" in argv:
         print(f"{APP_NAME} {VERSION}")
         return 0
+    st = next((a for a in argv if a.startswith("--self-test")), None)
+    if st:
+        from .selftest import run
+        return run(st.partition("=")[2] or "tondar-selftest.json")
     QtWidgets.QApplication.setApplicationName(APP_ID)
     QtWidgets.QApplication.setApplicationDisplayName(APP_NAME)
     QtWidgets.QApplication.setDesktopFileName(APP_ID)
     app = QtWidgets.QApplication(argv)
     app.setQuitOnLastWindowClosed(False)
     urls = [a for a in argv[1:] if "://" in a]
-    if send_to_running(urls):
+    if send_to_running(urls, Settings()["api_port"]):
         return 0
 
     from .manager import DownloadManager

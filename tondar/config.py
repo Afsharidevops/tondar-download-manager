@@ -8,23 +8,19 @@ from pathlib import Path
 
 from . import APP_ID, API_PORT
 
-CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / APP_ID
-DATA_DIR = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / APP_ID
+from . import osutil
+
+CONFIG_DIR = osutil.config_dir(APP_ID)
+DATA_DIR = osutil.data_dir(APP_ID)
 BIN_DIR = DATA_DIR / "bin"
 STATE_FILE = DATA_DIR / "downloads.json"
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
-SOCKET_PATH = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", f"{APP_ID}-{os.getuid()}.sock")
+SOCKET_PATH = "" if osutil.IS_WIN else os.path.join(
+    os.environ.get("XDG_RUNTIME_DIR") or "/tmp", f"{APP_ID}-{os.getuid()}.sock")
 
 
 def xdg_download_dir() -> Path:
-    try:
-        out = subprocess.run(["xdg-user-dir", "DOWNLOAD"], capture_output=True,
-                             text=True, timeout=2).stdout.strip()
-        if out and out != str(Path.home()):
-            return Path(out)
-    except Exception:
-        pass
-    return Path.home() / "Downloads"
+    return osutil.download_dir()
 
 
 # Category name -> list of extensions (lower case, no dot). Order matters for UI.
@@ -138,7 +134,4 @@ class Settings:
 
 def find_tool(name: str):
     """Look for a helper binary in our private bin dir first, then PATH."""
-    p = BIN_DIR / name
-    if p.exists() and os.access(p, os.X_OK):
-        return str(p)
-    return shutil.which(name)
+    return osutil.find_tool(name, BIN_DIR)

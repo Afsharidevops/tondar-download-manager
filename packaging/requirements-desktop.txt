@@ -1,0 +1,6 @@
+# Windows 10+ / macOS 12+ builds. Qt 6.8 is the newest Qt that still runs on macOS 12.
+PyQt6>=6.8,<6.9
+PyQt6-Qt6>=6.8,<6.9
+pyinstaller>=6.10
+pillow
+imageio-ffmpeg

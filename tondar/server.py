@@ -83,6 +83,10 @@ class ApiServer:
                         return self._json(400, {"error": "bad url"})
                     server.bridge.download_requested.emit(data)
                     return self._json(200, {"ok": True})
+                if self.path == "/activate":       # second launch of the app (Windows single instance)
+                    urls = [u for u in data.get("urls", []) if isinstance(u, str)]
+                    server.bridge.activate_requested.emit("\n".join(urls) or "--show")
+                    return self._json(200, {"ok": True, "app": "tondar"})
                 if self.path == "/links":
                     links = [l for l in data.get("links", []) if isinstance(l, dict)]
                     server.bridge.links_requested.emit(links)

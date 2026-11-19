@@ -240,10 +240,9 @@ class DownloadManager(QtCore.QObject):
         action = self.settings["scheduler"].get("on_finish", "nothing")
         if action == "quit":
             QtCore.QCoreApplication.quit()
-        elif action == "shutdown":
-            subprocess.Popen(["systemctl", "poweroff"])
-        elif action == "suspend":
-            subprocess.Popen(["systemctl", "suspend"])
+        elif action in ("shutdown", "suspend"):
+            from .osutil import power
+            power(action)
 
     # ------------------------------------------------------- scheduler
     def _check_scheduler(self):

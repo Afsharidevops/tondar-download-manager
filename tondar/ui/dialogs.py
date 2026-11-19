@@ -13,6 +13,7 @@ from ..models import (human_size, human_speed, human_eta, COMPLETED, ERROR, PAUS
                       DOWNLOADING, CONNECTING, KIND_MEDIA, KIND_HTTP)
 from ..manager import MAIN_QUEUE
 from .. import media
+from .. import osutil
 from . import icons
 from .widgets import SegmentBar
 
@@ -33,16 +34,9 @@ def open_path(path):
 
 def open_folder(path):
     """Open the containing folder and select the file when the file manager supports it."""
-    try:
-        uri = QtCore.QUrl.fromLocalFile(path).toString()
-        r = subprocess.run(["dbus-send", "--session", "--print-reply",
-                            "--dest=org.freedesktop.FileManager1", "/org/freedesktop/FileManager1",
-                            "org.freedesktop.FileManager1.ShowItems", f"array:string:{uri}", "string:"],
-                           capture_output=True, timeout=3)
-        if r.returncode == 0:
-            return
-    except Exception:
-        pass
+    from ..osutil import open_folder as _open
+    if os.path.exists(path) and _open(path):
+        return
     open_path(os.path.dirname(path) if os.path.isfile(path) else path)
 
 
@@ -542,7 +536,8 @@ class ProgressDialog(QtWidgets.QDialog):
             if self.open_when_done.isChecked():
                 open_path(it.path)
             if self.shutdown_when_done.isChecked():
-                subprocess.Popen(["systemctl", "poweroff"])
+                from ..osutil import power
+                power("shutdown")
             if self.show_complete.isChecked() and not self.open_when_done.isChecked():
                 self.open_complete.emit(self.id)
             self.close()
@@ -637,14 +632,25 @@ class OptionsDialog(QtWidgets.QDialog):
             "<b>Chrome / Chromium / Brave / Edge / Vivaldi:</b> open <code>chrome://extensions</code>, "
             "turn on <i>Developer mode</i>, click <i>Load unpacked</i> and choose:<br>"
             f"<code>{ext_dir}/chrome</code><br><br>"
-            "<b>Firefox:</b> installed automatically (system policy). Restart Firefox once, "
-            "then click the Tondar toolbar icon → <i>Allow access to all websites</i>.")
+            + ("<b>Firefox:</b> installed automatically (system policy). Restart Firefox once, "
+               "then click the Tondar toolbar icon → <i>Allow access to all websites</i>."
+               if osutil.IS_LINUX else
+               "<b>Firefox:</b> click <i>Install in Firefox</i> below and confirm. Then click the Tondar "
+               "toolbar icon → <i>Allow access to all websites</i>."))
         info.setWordWrap(True)
         info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         f.addWidget(info)
+        brow = QtWidgets.QHBoxLayout()
         open_ext = QtWidgets.QPushButton("Open extension folder")
         open_ext.clicked.connect(lambda: open_path(ext_dir))
-        f.addWidget(open_ext, 0, Qt.AlignmentFlag.AlignLeft)
+        brow.addWidget(open_ext)
+        self.xpi = os.path.join(ext_dir, "tondar-firefox-signed.xpi")
+        ff = QtWidgets.QPushButton("Install in Firefox")
+        ff.setEnabled(os.path.exists(self.xpi))
+        ff.clicked.connect(self._install_firefox)
+        brow.addWidget(ff)
+        brow.addStretch(1)
+        f.addLayout(brow)
         self.media_panel = QtWidgets.QCheckBox("Show \"Download this video\" panel on web players")
         self.media_panel.setChecked(s["media_panel_enabled"])
         self.clip = QtWidgets.QCheckBox("Monitor clipboard for download links")
@@ -789,6 +795,15 @@ class OptionsDialog(QtWidgets.QDialog):
         bb.accepted.connect(self._save)
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
+
+    def _install_firefox(self):
+        cmd = osutil.firefox_command()
+        if not cmd:
+            QtWidgets.QMessageBox.information(
+                self, APP_NAME, "Firefox was not found. Open this file with Firefox to install the add-on:\n" + self.xpi)
+            open_folder(self.xpi)
+            return
+        subprocess.Popen(cmd + [self.xpi], **osutil.subprocess_kwargs())
 
     def _refresh_tools(self):
         st = media.tools_status()

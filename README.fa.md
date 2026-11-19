@@ -6,7 +6,7 @@
 
 # تندر — Tondar Download Manager
 
-دانلود منیجر سریع و چندتکه‌ای برای **Ubuntu 22.04 تا 26.04**، با افزونه‌ی مرورگر و دکمه‌ی **«Download this video»** برای یوتیوب و سایت‌های دیگر. چیدمان و روال کارش برای هر کسی که با دانلود منیجرهای کلاسیک ویندوز کار کرده آشناست.
+دانلود منیجر سریع و چندتکه‌ای برای **Ubuntu 22.04 تا 26.04، ویندوز ۱۰ و ۱۱، و macOS 12 به بعد**، با افزونه‌ی مرورگر و دکمه‌ی **«Download this video»** برای یوتیوب و سایت‌های دیگر. چیدمان و روال کارش برای هر کسی که با دانلود منیجرهای کلاسیک ویندوز کار کرده آشناست.
 
 </div>
 
@@ -45,6 +45,25 @@
 <div dir="rtl">
 
 ## نصب
+
+### ویندوز ۱۰ و ۱۱
+
+فایل **`Tondar-Setup-<version>.exe`** را از صفحه‌ی [Releases](../../releases/latest) دانلود و اجرا کنید. دسترسی ادمین لازم نیست. نسخه‌ی پرتابل (`.zip`) هم موجود است.
+
+چون فایل نصب امضای دیجیتال ندارد، ممکن است پیغام آبی *Windows protected your PC* نمایش داده شود. روی **More info** و بعد **Run anyway** بزنید.
+
+### macOS 12 (Monterey) به بعد
+
+فایل `.dmg` مناسب مک خود را از [Releases](../../releases/latest) دانلود کنید: **`…-macOS-apple-silicon.dmg`** برای مک‌های M1 تا M4، و **`…-macOS-intel.dmg`** برای مک‌های اینتل. فایل را باز کنید و **Tondar** را داخل **Applications** بکشید.
+
+چون برنامه توسط Apple تأیید (notarize) نشده، بار اول اجرا نمی‌شود:
+- macOS 12 تا 14: در Applications روی Tondar راست‌کلیک کنید، **Open** را بزنید و دوباره **Open** را تأیید کنید.
+- macOS 15 به بعد: یک بار برنامه را باز کنید، بعد به **System Settings ← Privacy & Security** بروید و **Open Anyway** را بزنید.
+- یا در Terminal: `xattr -dr com.apple.quarantine /Applications/Tondar.app`
+
+در ویندوز و مک، افزونه‌ی فایرفاکس از مسیر **Options ← General ← Install in Firefox** نصب می‌شود.
+
+### اوبونتو
 
 **نصب با یک دستور** (آخرین نسخه را دانلود و با apt نصب می‌کند):
 
@@ -118,7 +137,7 @@ python3 packaging/build_deb.py              # -> dist/tondar_<version>_all.deb
 
 ## پیش‌نیازها
 
-- Ubuntu 22.04 یا جدیدتر (Python 3.10 یا بالاتر)
+- Ubuntu 22.04 یا جدیدتر (Python 3.10 یا بالاتر)، ویندوز ۱۰ (نسخه‌ی 1809) یا جدیدتر (۶۴ بیتی)، macOS 12 یا جدیدتر
 - `python3-pyqt6` یا `python3-pyqt5`
 - پیشنهادی: `ffmpeg` (برای ترکیب صدا و تصویر و ساختن MP3) و `python3-socks` (برای پروکسی SOCKS)
 
