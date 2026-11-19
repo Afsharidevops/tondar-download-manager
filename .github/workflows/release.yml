@@ -45,7 +45,7 @@ jobs:
           name: Tondar Download Manager ${{ github.ref_name }}
           generate_release_notes: true
           files: |
-            dist/tondar_*_all.deb
+            dist/*.deb
             install.sh
 
       - name: Keep the package as a workflow artifact
