@@ -1,0 +1,290 @@
+/* Tondar - "Download this video" panel shown over web players. */
+(() => {
+  if (window.__tondarLoaded) return;
+  window.__tondarLoaded = true;
+  const B = globalThis.browser ?? globalThis.chrome;
+
+  const KNOWN = /^https?:\/\/([a-z0-9-]+\.)*(youtube\.com|youtu\.be|youtube-nocookie\.com|vimeo\.com|dailymotion\.com|twitch\.tv|instagram\.com|facebook\.com|fb\.watch|twitter\.com|x\.com|tiktok\.com|soundcloud\.com|aparat\.com|namasha\.com|telewebion\.com|bilibili\.com|reddit\.com|bandcamp\.com|mixcloud\.com|rumble\.com|odysee\.com|ok\.ru|vk\.com|streamable\.com)\//i;
+  const YT_MEDIA_PAGE = /youtube\.com\/(watch|shorts\/|embed\/|live\/)|youtu\.be\//i;
+
+  let enabled = false;
+  let sniffed = [];
+  let target = null;           // current <video>/<audio> element
+  const dismissed = new WeakSet();
+  let dismissedFloating = false;
+  let host, root, panel, menu, menuOpen = false, lastUrl = location.href;
+  let formatsCache = { url: null, data: null };
+
+  const BOLT = '<svg viewBox="0 0 64 64" width="18" height="18"><path fill="#ffd24a" d="M36 6 16 36h14l-6 22 24-32H34l6-20z"/></svg>';
+
+  function send(msg) {
+    return new Promise((res) => {
+      try {
+        B.runtime.sendMessage(msg, (r) => res(r || { error: B.runtime.lastError?.message || "no reply" }));
+      } catch (e) {
+        res({ error: String(e) });
+      }
+    });
+  }
+
+  function human(n) {
+    if (!n || n <= 0) return "";
+    const u = ["B", "KB", "MB", "GB"];
+    let i = 0;
+    while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+    return (i ? n.toFixed(1) : n) + " " + u[i];
+  }
+
+  function isMediaPage() {
+    if (/youtube\.com|youtu\.be/i.test(location.hostname)) return YT_MEDIA_PAGE.test(location.href);
+    return KNOWN.test(location.href);
+  }
+
+  /* --------------------------------------------------------------- UI */
+  function build() {
+    host = document.createElement("tondar-panel");
+    host.style.cssText = "all:initial;position:absolute;z-index:2147483647;top:0;left:0;display:none;";
+    root = host.attachShadow({ mode: "closed" });
+    root.innerHTML = `
+      <style>
+        :host{all:initial}
+        .wrap{font:13px/1.2 system-ui,-apple-system,"Segoe UI",Ubuntu,sans-serif;color:#fff;user-select:none}
+        .btn{display:flex;align-items:center;gap:6px;height:30px;padding:0 4px 0 9px;border-radius:6px;
+             background:linear-gradient(#2f86f0,#1458b8);box-shadow:0 2px 8px rgba(0,0,0,.45);
+             border:1px solid rgba(255,255,255,.25);cursor:pointer;opacity:.93;transition:opacity .15s}
+        .btn:hover{opacity:1;background:linear-gradient(#3a90f7,#1a63c6)}
+        .lbl{white-space:nowrap;font-weight:600;letter-spacing:.1px}
+        .x{margin-left:4px;width:18px;height:18px;line-height:17px;text-align:center;border-radius:4px;
+           color:#d8e6fb;font-size:15px}
+        .x:hover{background:rgba(255,255,255,.2);color:#fff}
+        .menu{position:absolute;right:0;top:34px;min-width:270px;max-width:380px;max-height:380px;overflow:auto;
+              background:#fff;color:#1c2733;border-radius:6px;box-shadow:0 6px 22px rgba(0,0,0,.45);
+              border:1px solid #b9c6d3;display:none;padding:4px 0}
+        .menu.open{display:block}
+        .head{padding:6px 12px 4px;font-size:11px;font-weight:700;color:#5b6b7b;text-transform:uppercase}
+        .title{padding:2px 12px 6px;font-size:12px;color:#334;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .it{display:flex;justify-content:space-between;gap:16px;padding:7px 12px;cursor:pointer;white-space:nowrap}
+        .it:hover{background:#1f6fd8;color:#fff}
+        .it .sz{color:#7a8794}.it:hover .sz{color:#e3edfb}
+        .msg{padding:10px 12px;color:#556;white-space:normal}
+        .err{color:#b3261e}
+        .spin{display:inline-block;width:12px;height:12px;border:2px solid #9fb6d0;border-top-color:#1f6fd8;
+              border-radius:50%;animation:s 1s linear infinite;vertical-align:-2px;margin-right:6px}
+        @keyframes s{to{transform:rotate(360deg)}}
+        .toast{position:absolute;right:0;top:34px;background:#1d2b38;color:#fff;padding:8px 12px;border-radius:6px;
+               white-space:nowrap;box-shadow:0 4px 14px rgba(0,0,0,.4)}
+      </style>
+      <div class="wrap">
+        <div class="btn" title="Tondar Download Manager">${BOLT}<span class="lbl">Download this video</span><span class="x" title="Hide">×</span></div>
+        <div class="menu"></div>
+      </div>`;
+    panel = root.querySelector(".btn");
+    menu = root.querySelector(".menu");
+    panel.addEventListener("click", (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      if (e.target.classList.contains("x")) {
+        if (target) dismissed.add(target); else dismissedFloating = true;
+        hide();
+        return;
+      }
+      toggleMenu();
+    });
+    menu.addEventListener("click", (e) => e.stopPropagation());
+    document.addEventListener("click", () => closeMenu(), true);
+    (document.documentElement || document.body).appendChild(host);
+  }
+
+  function hide() {
+    if (host) host.style.display = "none";
+    closeMenu();
+  }
+
+  function label(kind) {
+    root.querySelector(".lbl").textContent = kind === "audio" ? "Download this audio" : "Download this video";
+  }
+
+  function closeMenu() {
+    menuOpen = false;
+    menu?.classList.remove("open");
+  }
+
+  function toggleMenu() {
+    if (menuOpen) return closeMenu();
+    menuOpen = true;
+    menu.classList.add("open");
+    fillMenu();
+  }
+
+  function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+
+  async function fillMenu() {
+    menu.textContent = "";
+    const pageUrl = location.href;
+    const useYtdlp = isMediaPage() || sniffed.length === 0 || (target && !sniffed.length);
+    let loading = null;
+    if (useYtdlp) {
+      loading = el("div", "msg");
+      loading.innerHTML = '<span class="spin"></span>Reading available qualities...';
+      menu.appendChild(loading);
+    }
+    // direct files / streams seen on this tab
+    if (sniffed.length && !(/youtube\.com/i.test(location.hostname))) {
+      menu.appendChild(el("div", "head", "Detected on this page"));
+      for (const s of sniffed.slice(-12).reverse()) {
+        const name = decodeURIComponent((s.url.split("?")[0].split("/").pop() || s.kind)).slice(0, 48);
+        const row = el("div", "it");
+        row.appendChild(el("span", "", (s.kind === "stream" ? "Stream " : s.kind === "audio" ? "Audio " : "Video ") + name));
+        row.appendChild(el("span", "sz", human(s.size)));
+        row.addEventListener("click", () => {
+          if (s.kind === "stream") act({ type: "media-download", url: s.url, format: null });
+          else act({ type: "file-download", url: s.url, referer: pageUrl });
+        });
+        menu.appendChild(row);
+      }
+    }
+    if (!useYtdlp) return;
+    let data = formatsCache.url === pageUrl ? formatsCache.data : null;
+    if (!data) {
+      data = await send({ type: "formats", url: pageUrl });
+      if (!data.error) formatsCache = { url: pageUrl, data };
+    }
+    if (!menuOpen) return;
+    loading.remove();
+    if (data.error) {
+      if (!sniffed.length) {
+        const m = el("div", "msg err", /not running/.test(data.error)
+          ? "Tondar Download Manager is not running. Start it and try again."
+          : "No downloadable video found: " + data.error.slice(0, 160));
+        menu.prepend(m);
+      }
+      return;
+    }
+    const frag = document.createDocumentFragment();
+    frag.appendChild(el("div", "head", "Download with Tondar"));
+    if (data.title) frag.appendChild(el("div", "title", data.title));
+    for (const o of data.options) {
+      const row = el("div", "it");
+      row.appendChild(el("span", "", o.label));
+      row.appendChild(el("span", "sz", human(o.size)));
+      row.addEventListener("click", () => act({ type: "media-download", url: pageUrl, format: o.id }));
+      frag.appendChild(row);
+    }
+    menu.prepend(frag);
+  }
+
+  async function act(msg) {
+    closeMenu();
+    const r = await send(msg);
+    const t = el("div", "toast", r && !r.error ? "Sent to Tondar Download Manager" : (r.error || "Failed"));
+    root.querySelector(".wrap").appendChild(t);
+    setTimeout(() => t.remove(), 2500);
+  }
+
+  /* ------------------------------------------------------- placement */
+  function visibleArea(v) {
+    const r = v.getBoundingClientRect();
+    if (r.width < 200 || r.height < 110) return 0;
+    const st = getComputedStyle(v);
+    if (st.visibility === "hidden" || st.display === "none" || +st.opacity === 0) return 0;
+    const w = Math.min(r.right, innerWidth) - Math.max(r.left, 0);
+    const h = Math.min(r.bottom, innerHeight) - Math.max(r.top, 0);
+    return w > 0 && h > 0 ? w * h : 0;
+  }
+
+  function pickTarget() {
+    let best = null, area = 0;
+    for (const v of document.querySelectorAll("video")) {
+      if (dismissed.has(v)) continue;
+      const a = visibleArea(v);
+      if (a > area) { area = a; best = v; }
+    }
+    return best;
+  }
+
+  function place() {
+    if (!enabled) return hide();
+    if (location.href !== lastUrl) {
+      lastUrl = location.href;
+      sniffed = [];
+      formatsCache = { url: null, data: null };
+      dismissedFloating = false;
+      closeMenu();
+    }
+    // YouTube home/search pages autoplay hover previews: only show on real video pages
+    const ytNonVideo = /(^|\.)youtube\.com$/i.test(location.hostname) && !YT_MEDIA_PAGE.test(location.href);
+    target = ytNonVideo ? null : pickTarget();
+    const hasAudio = sniffed.some((s) => s.kind === "audio");
+    const want = target || ((isMediaPage() || hasAudio) && !dismissedFloating && window.top === window);
+    if (!want) return hide();
+    if (!host) build();
+    if (!host.isConnected) (document.documentElement || document.body).appendChild(host);
+    host.style.display = "block";
+    const w = panel.offsetWidth || 190;
+    if (target) {
+      label("video");
+      const r = target.getBoundingClientRect();
+      const top = Math.max(r.top, 0) + 10;
+      host.style.position = "absolute";
+      host.style.top = top + scrollY + "px";
+      host.style.left = Math.min(r.right, innerWidth) - w - 12 + scrollX + "px";
+    } else {
+      label(hasAudio && !YT_MEDIA_PAGE.test(location.href) ? "audio" : "video");
+      host.style.position = "fixed";
+      host.style.top = innerHeight - 52 + "px";
+      host.style.left = innerWidth - w - 24 + "px";
+    }
+  }
+
+  /* --------------------------------------------------------- wiring */
+  B.runtime.onMessage.addListener((msg) => {
+    if (msg.type === "tondar-media") {
+      sniffed = msg.items || [];
+      place();
+    } else if (msg.type === "tondar-collect-links" && window.top === window) {
+      collectLinks(msg.selection);
+    }
+  });
+
+  function collectLinks(selectionOnly) {
+    let anchors = [...document.querySelectorAll("a[href]")];
+    const sel = getSelection();
+    if (selectionOnly && sel && sel.rangeCount) {
+      const range = sel.getRangeAt(0);
+      anchors = anchors.filter((a) => range.intersectsNode(a));
+    }
+    const seen = new Set();
+    const links = [];
+    for (const a of anchors) {
+      const u = a.href;
+      if (!/^(https?|ftp):/i.test(u) || seen.has(u)) continue;
+      seen.add(u);
+      links.push({ url: u, referer: location.href });
+    }
+    send({ type: "links", links });
+  }
+
+  async function init() {
+    const st = await send({ type: "status" });
+    enabled = !!st.panel;
+    const s = await send({ type: "sniffed" });
+    sniffed = s.items || [];
+    place();
+    setInterval(place, 1000);
+    addEventListener("scroll", place, { passive: true });
+    addEventListener("resize", place, { passive: true });
+    document.addEventListener("yt-navigate-finish", () => setTimeout(place, 300));
+    document.addEventListener("play", () => place(), true);
+  }
+
+  B.storage?.onChanged?.addListener((ch) => {
+    if (ch.panel) { enabled = !!ch.panel.newValue; place(); }
+  });
+
+  init();
+})();
