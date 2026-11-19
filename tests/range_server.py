@@ -37,7 +37,7 @@ def make_handler(root, ranges=True, throttle=0):
                 self.send_header("Content-Type", "video/mp4")
             else:
                 self.send_header("Content-Type", "application/octet-stream")
-                self.send_header("Content-Disposition", 'attachment; filename="test file.bin"')
+                self.send_header("Content-Disposition", 'attachment; filename="%s"' % os.path.basename(path))
             if status == 206:
                 self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
             if ranges:

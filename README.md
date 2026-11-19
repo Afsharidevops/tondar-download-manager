@@ -23,10 +23,15 @@ A fast, segmented download manager for **Ubuntu 22.04 – 26.04** with browser i
   - right-click menu: *Download with Tondar*, *Download all links*.
 - **Video sites** (YouTube and about 1,800 others) through [yt-dlp](https://github.com/yt-dlp/yt-dlp). The latest yt-dlp and Deno are downloaded on first use and updated weekly.
 - **Connections:** HTTP, HTTPS and FTP; HTTP and SOCKS5 proxies; browser cookies and referer; Basic Auth.
+- **Import and export download lists:** plain text, IDM export files (`.ef2`, so lists move between Windows IDM and Tondar) and Tondar `.json` lists with file names and folders.
+- **Download all links:** every link on a page is checked in the background for its real file name, size and type. Web pages are hidden, and the total size of the checked files is shown.
+- **Modern interface** with light and dark themes that follow the system, plus a classic look (Options → General → Appearance).
 - **Desktop integration:** clipboard monitor, system tray icon, start at login, and desktop notifications (all, errors only, or none).
 
-| Progress window | Video panel in the browser |
+| Dark theme | Download all links |
 |---|---|
+| ![Dark theme](docs/screenshots/main-window-dark.png) | ![All links](docs/screenshots/all-links.png) |
+| **Progress window** | **Video panel in the browser** |
 | ![Progress](docs/screenshots/progress.png) | ![Video panel](docs/screenshots/video-panel.png) |
 
 ## Installation

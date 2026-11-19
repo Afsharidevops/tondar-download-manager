@@ -12,7 +12,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tests.range_server import serve  # noqa: E402
 root = tempfile.mkdtemp()
-for name, size in (("ubuntu-24.04-desktop.iso", 40), ("Album - Track 01.mp3", 6), ("report.pdf", 3)):
+for name, size in (("ubuntu-24.04-desktop.iso", 40), ("Album - Track 01.mp3", 6), ("report.pdf", 3),
+                   ("Movie.2026.1080p.mkv", 9), ("Movie.2026.720p.mkv", 5), ("setup.deb", 2)):
     with open(os.path.join(root, name), "wb") as f:
         f.write(os.urandom(size * 1024 * 1024))
 serve(root, 18090, throttle=900_000)
@@ -29,6 +30,8 @@ out = sys.argv[1] if len(sys.argv) > 1 else "/home/claude/shots"
 os.makedirs(out, exist_ok=True)
 app = QtWidgets.QApplication(sys.argv)
 s = Settings()
+from tondar.ui import theme  # noqa: E402
+theme.apply(app, os.environ.get("THEME", "light"))
 m = DownloadManager(s)
 win = MainWindow(m, s, Bridge(), {}, "/usr/share/tondar/extension")
 win.show()
@@ -80,7 +83,7 @@ def step():
         sc.show()
         shot(sc, "5_scheduler.png")
         sc.close()
-    elif st >= 6:
+    elif st >= 6 and "links_at" not in state:
         done = [m.items[i].status for i in ids]
         if all(x == COMPLETED for x in done) or st > 80:
             print("statuses:", done)
@@ -95,7 +98,28 @@ def step():
                 a = hashlib.md5(open(it.path, "rb").read()).hexdigest()
                 b = hashlib.md5(open(os.path.join(root, it.filename), "rb").read()).hexdigest()
                 print(it.filename, "OK" if a == b else "MISMATCH")
-            app.quit()
+            from tondar import listio
+            for fmt in ("txt", "ef2", "json"):
+                pth = os.path.join(home, "list." + fmt)
+                listio.export_items(list(m.items.values()), pth)
+                back = listio.import_file(pth)
+                print("export/import", fmt, len(back), "links", back[0])
+            open(os.path.join(root, "index.html"), "w").write("<html>hi</html>")
+            links = [{"url": base + n} for n in ("Movie.2026.1080p.mkv", "Movie.2026.720p.mkv", "setup.deb",
+                                                   "index.html", "missing.zip")]
+            links += [{"url": base + "index.html#about"}]
+            from tondar.ui.dialogs import LinksDialog
+            ld = LinksDialog(s, links, win)
+            ld.show()
+            prog["ld"] = ld
+            state["links_at"] = st
+    elif "links_at" in state and st >= state["links_at"] + 4:
+        ld = prog["ld"]
+        shot(ld, "10_links.png")
+        print("links status:", ld.status.text())
+        print("checked:", [l.get("filename", l["url"]) for l in ld.selected_links()])
+        ld.reject()
+        app.quit()
 
 
 t = QtCore.QTimer()

@@ -2,8 +2,17 @@
 from ..qt import QtCore, QtGui, Qt
 
 _cache = {}
+FLAT = False
 
 S = 64  # design grid
+
+
+def set_flat(flat):
+    """Modern theme: solid colours, no gloss or outlines."""
+    global FLAT
+    if FLAT != flat:
+        FLAT = flat
+        _cache.clear()
 
 
 def _pm(draw, size=S):
@@ -18,6 +27,10 @@ def _pm(draw, size=S):
 
 
 def _grad(c1, c2, y0=4, y1=60):
+    if FLAT:
+        a, b = QtGui.QColor(c1), QtGui.QColor(c2)
+        return QtGui.QBrush(QtGui.QColor((a.red() + 2 * b.red()) // 3, (a.green() + 2 * b.green()) // 3,
+                                         (a.blue() + 2 * b.blue()) // 3))
     g = QtGui.QLinearGradient(0, y0, 0, y1)
     g.setColorAt(0, QtGui.QColor(c1))
     g.setColorAt(1, QtGui.QColor(c2))
@@ -25,6 +38,8 @@ def _grad(c1, c2, y0=4, y1=60):
 
 
 def _pen(color="#00000055", w=2.0):
+    if FLAT and color.startswith("#000000"):
+        return QtGui.QPen(Qt.PenStyle.NoPen)
     return QtGui.QPen(QtGui.QColor(color), w)
 
 
@@ -33,8 +48,9 @@ def _circle(p, c1, c2):
     p.setBrush(_grad(c1, c2))
     p.drawEllipse(QtCore.QRectF(6, 6, 52, 52))
     p.setPen(Qt.PenStyle.NoPen)
-    p.setBrush(QtGui.QColor(255, 255, 255, 60))
-    p.drawEllipse(QtCore.QRectF(14, 9, 36, 20))
+    if not FLAT:
+        p.setBrush(QtGui.QColor(255, 255, 255, 60))
+        p.drawEllipse(QtCore.QRectF(14, 9, 36, 20))
 
 
 def draw_add(p):

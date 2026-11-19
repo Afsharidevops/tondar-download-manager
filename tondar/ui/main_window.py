@@ -10,9 +10,10 @@ from ..config import GENERAL
 from ..models import (human_size, human_speed, human_eta, COMPLETED, ERROR, PAUSED, QUEUED,
                       DOWNLOADING, CONNECTING, WAITING, KIND_MEDIA)
 from ..manager import MAIN_QUEUE
-from . import icons
+from . import icons, theme
+from .. import listio
 from .dialogs import (AddUrlDialog, FileInfoDialog, ProgressDialog, CompleteDialog, OptionsDialog,
-                      SchedulerDialog, open_path, open_folder, about, run_tools_update)
+                      SchedulerDialog, LinksDialog, open_path, open_folder, about, run_tools_update)
 
 COLS = ["File Name", "Q", "Size", "Status", "Time left", "Transfer rate", "Last Try Date", "Description"]
 SORT_ROLE = Qt.ItemDataRole.UserRole + 1
@@ -117,11 +118,65 @@ class DownloadModel(QtCore.QAbstractTableModel):
             self.dataChanged.emit(self.index(r, 0), self.index(r, len(COLS) - 1))
 
 
+class StatusDelegate(QtWidgets.QStyledItemDelegate):
+    """Modern theme: rounded progress bar + percentage in the Status column."""
+
+    def __init__(self, manager, parent=None):
+        super().__init__(parent)
+        self.m = manager
+
+    def paint(self, painter, option, index):
+        if not theme.is_modern():
+            return super().paint(painter, option, index)
+        it = self.m.items.get(index.data(ID_ROLE))
+        if it is None:
+            return super().paint(painter, option, index)
+        opt = QtWidgets.QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        opt.text = ""
+        style = opt.widget.style() if opt.widget else QtWidgets.QApplication.style()
+        style.drawControl(QtWidgets.QStyle.ControlElement.CE_ItemViewItem, opt, painter, opt.widget)
+        painter.save()
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        r = QtCore.QRectF(option.rect).adjusted(8, 0, -8, 0)
+        text, col = index.data(Qt.ItemDataRole.DisplayRole), theme.color("muted")
+        show_bar = it.status not in (COMPLETED, ERROR) and it.size > 0 and it.downloaded > 0
+        if it.status == COMPLETED:
+            col = theme.color("ok")
+            text = "✓ Complete"
+        elif it.status == ERROR:
+            col = theme.color("err")
+            text = "⚠ Error"
+        elif it.id in self.m.engines:
+            col = theme.color("accent")
+        if show_bar:
+            bar_w = max(30.0, r.width() - 58)
+            bar = QtCore.QRectF(r.left(), r.center().y() - 3, bar_w, 6)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(theme.color("track"))
+            painter.drawRoundedRect(bar, 3, 3)
+            fill = QtCore.QRectF(bar.left(), bar.top(), max(6.0, bar.width() * it.progress), bar.height())
+            painter.setBrush(theme.color("accent") if it.id in self.m.engines else theme.color("muted"))
+            painter.drawRoundedRect(fill, 3, 3)
+            painter.setPen(theme.color("text"))
+            f = painter.font()
+            f.setPointSizeF(max(8.0, f.pointSizeF() - 1))
+            painter.setFont(f)
+            painter.drawText(QtCore.QRectF(bar.right() + 6, r.top(), 52, r.height()),
+                             int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+                             f"{it.progress * 100:.1f}%")
+        else:
+            painter.setPen(col)
+            painter.drawText(r, int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter), text or "")
+        painter.restore()
+
+
 class FilterProxy(QtCore.QSortFilterProxyModel):
     def __init__(self, manager):
         super().__init__()
         self.m = manager
         self.flt = ("all", None)
+        self.query = ""
         self.setSortRole(SORT_ROLE)
         self.setDynamicSortFilter(False)
 
@@ -129,9 +184,16 @@ class FilterProxy(QtCore.QSortFilterProxyModel):
         self.flt = (kind, value)
         self.invalidateFilter()
 
+    def set_query(self, q):
+        self.query = q.strip().lower()
+        self.invalidateFilter()
+
     def filterAcceptsRow(self, row, parent):
         it = self.sourceModel().item(row)
         if it is None:
+            return False
+        if self.query and self.query not in it.filename.lower() and self.query not in it.url.lower() \
+                and self.query not in (it.description or "").lower():
             return False
         kind, val = self.flt
         if kind == "queue":
@@ -158,7 +220,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.really_quit = False
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(icons.icon("app"))
-        self.resize(1080, 600)
+        self.resize(1180, 640)
 
         self._build_actions()
         self._build_menus()
@@ -198,15 +260,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.a_add = A("Add URL", "add", self.add_url, "Ctrl+N", "Add a new download")
         self.a_resume = A("Resume", "resume", self.resume_selected, None, "Resume selected downloads")
         self.a_stop = A("Stop", "stop", self.stop_selected, None, "Stop selected downloads")
-        self.a_stop_all = A("Stop All", "stop_all", self.m.stop_all, None, "Stop all downloads")
+        self.a_stop_all = A("Stop all", "stop_all", self.m.stop_all, None, "Stop all downloads")
         self.a_delete = A("Delete", "delete", self.delete_selected, "Del", "Delete selected downloads")
-        self.a_delete_done = A("Delete Co...", "delete_done", self.m.remove_completed, None,
+        self.a_delete_done = A("Clean up", "delete_done", self.m.remove_completed, None,
                                "Delete all completed downloads")
         self.a_options = A("Options", "options", self.options, None, "Configuration")
         self.a_scheduler = A("Scheduler", "scheduler", self.scheduler, None, "Scheduler")
-        self.a_start_q = A("Start Qu...", "start_queue", lambda: self.m.start_queue(), None, "Start main queue")
-        self.a_stop_q = A("Stop Qu...", "stop_queue", self.m.stop_queue, None, "Stop main queue")
-        self.a_speed = A("Speed Limiter", "speed", self.toggle_speed, None, "Turn the speed limiter on/off")
+        self.a_start_q = A("Start queue", "start_queue", lambda: self.m.start_queue(), None, "Start main queue")
+        self.a_stop_q = A("Stop queue", "stop_queue", self.m.stop_queue, None, "Stop main queue")
+        self.a_speed = A("Speed limit", "speed", self.toggle_speed, None, "Turn the speed limiter on/off")
         self.a_speed.setCheckable(True)
         self.a_speed.setChecked(bool(self.s["speed_limit_enabled"]))
         self.a_open = A("Open", None, self.open_selected)
@@ -216,12 +278,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self.a_copy = A("Copy address", None, self.copy_url)
         self.a_exit = A("Exit", None, self.quit_app, "Ctrl+Q")
         self.a_tools = A("Update video engine (yt-dlp)", None, lambda: run_tools_update(self, self.s))
+        self.a_import = A("Import list...", None, self.import_list, "Ctrl+I")
+        self.a_export = A("Export list...", None, lambda: self.export_list(False), "Ctrl+E")
+        self.a_export_sel = A("Export selected...", None, lambda: self.export_list(True))
 
     def _build_menus(self):
         mb = self.menuBar()
         t = mb.addMenu("&Tasks")
         t.addAction(self.a_add)
         t.addAction(self._act("Add batch download from clipboard", None, self.batch_from_clipboard))
+        t.addSeparator()
+        t.addAction(self.a_import)
+        t.addAction(self.a_export)
         t.addSeparator()
         t.addAction(self.a_exit)
         f = mb.addMenu("&File")
@@ -246,16 +314,31 @@ class MainWindow(QtWidgets.QMainWindow):
     def _build_toolbar(self):
         tb = QtWidgets.QToolBar("Main")
         tb.setObjectName("main_toolbar")
-        tb.setIconSize(QtCore.QSize(40, 40))
+        modern = theme.is_modern()
+        tb.setIconSize(QtCore.QSize(30, 30) if modern else QtCore.QSize(40, 40))
         tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
         tb.setMovable(False)
-        tb.setStyleSheet("QToolBar{spacing:2px; padding:2px; border-bottom:1px solid #c8d0d8;"
-                         "background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #fbfcfd,stop:1 #e7ecf1);}"
-                         "QToolButton{min-width:64px; padding:3px 2px; color:#1d2b38;}")
-        for a in (self.a_add, self.a_resume, self.a_stop, self.a_stop_all, self.a_delete,
-                  self.a_delete_done, self.a_options, self.a_scheduler, self.a_start_q,
-                  self.a_stop_q, self.a_speed):
-            tb.addAction(a)
+        if not modern:
+            tb.setStyleSheet("QToolBar{spacing:2px; padding:2px; border-bottom:1px solid #c8d0d8;"
+                             "background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #fbfcfd,stop:1 #e7ecf1);}"
+                             "QToolButton{min-width:64px; padding:3px 2px; color:#1d2b38;}")
+        groups = ((self.a_add,), (self.a_resume, self.a_stop, self.a_stop_all),
+                  (self.a_delete, self.a_delete_done), (self.a_start_q, self.a_stop_q, self.a_scheduler),
+                  (self.a_speed, self.a_options))
+        for gi, grp in enumerate(groups):
+            if gi and modern:
+                tb.addSeparator()
+            for a in grp:
+                tb.addAction(a)
+        spacer = QtWidgets.QWidget()
+        spacer.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
+        tb.addWidget(spacer)
+        self.search = QtWidgets.QLineEdit()
+        self.search.setObjectName("search")
+        self.search.setPlaceholderText("Search downloads...")
+        self.search.setClearButtonEnabled(True)
+        self.search.setMaximumWidth(300)
+        tb.addWidget(self.search)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb)
         self.toolbar = tb
 
@@ -263,7 +346,13 @@ class MainWindow(QtWidgets.QMainWindow):
         split = QtWidgets.QSplitter()
         # categories tree
         self.tree = QtWidgets.QTreeWidget()
+        self.tree.setObjectName("sidebar")
         self.tree.setHeaderLabel("Categories")
+        if theme.is_modern():
+            self.tree.setHeaderHidden(True)
+            self.tree.setIndentation(14)
+            self.tree.setIconSize(QtCore.QSize(18, 18))
+            self.tree.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.tree.setMinimumWidth(170)
         self.tree.setMaximumWidth(260)
 
@@ -292,10 +381,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.proxy = FilterProxy(self.m)
         self.proxy.setSourceModel(self.model)
         self.view = QtWidgets.QTreeView()
+        self.view.setObjectName("downloads")
         self.view.setModel(self.proxy)
         self.view.setRootIsDecorated(False)
         self.view.setUniformRowHeights(True)
-        self.view.setAlternatingRowColors(True)
+        self.view.setAlternatingRowColors(not theme.is_modern())
+        self.view.setItemDelegateForColumn(3, StatusDelegate(self.m, self.view))
+        if theme.is_modern():
+            self.view.setIconSize(QtCore.QSize(20, 20))
         self.view.setSortingEnabled(True)
         self.view.sortByColumn(6, Qt.SortOrder.AscendingOrder)
         self.view.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -304,12 +397,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.view.doubleClicked.connect(self._double_click)
         self.view.selectionModel().selectionChanged.connect(lambda *_: self._update_actions())
         hdr = self.view.header()
-        for i, w in enumerate([330, 24, 80, 80, 90, 100, 150, 200]):
+        for i, w in enumerate([340, 24, 85, 150, 90, 100, 160, 200]):
             hdr.resizeSection(i, w)
         split.addWidget(self.view)
         split.setStretchFactor(1, 1)
         split.setSizes([200, 880])
         self.setCentralWidget(split)
+        self.search.textChanged.connect(self.proxy.set_query)
         self.a_view_tb.toggled.connect(lambda v: self.toolbar.setVisible(v))
         self.a_view_cat.toggled.connect(self.tree.setVisible)
 
@@ -519,7 +613,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         menu = QtWidgets.QMenu(self)
         for a in (self.a_open, self.a_open_folder, None, self.a_resume, self.a_stop, self.a_redownload,
-                  None, self.a_to_queue, self.a_copy, None, self.a_delete):
+                  None, self.a_to_queue, self.a_copy, self.a_export_sel, None, self.a_delete):
             menu.addSeparator() if a is None else menu.addAction(a)
         exec_(menu, self.view.viewport().mapToGlobal(pos))
 
@@ -568,58 +662,75 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.s["show_progress_dialog"]:
             self.show_progress(it.id)
 
-    def on_browser_links(self, links):
-        dlg = QtWidgets.QDialog(self)
-        dlg.setWindowTitle("Download all links")
-        dlg.setWindowIcon(icons.icon("app"))
-        dlg.resize(700, 420)
-        lay = QtWidgets.QVBoxLayout(dlg)
-        lw = QtWidgets.QListWidget()
-        for l in links:
-            url = l.get("url", "")
-            if not re.match(r"^(https?|ftp)://", url):
-                continue
-            name = url.split("?")[0].rstrip("/").rsplit("/", 1)[-1]
-            ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-            item = QtWidgets.QListWidgetItem(icons.icon(self.s.category_for(name)), url)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Checked if ext in self.s["capture_extensions"]
-                               else Qt.CheckState.Unchecked)
-            item.setData(Qt.ItemDataRole.UserRole, l)
-            lw.addItem(item)
-        lay.addWidget(QtWidgets.QLabel("Select the files to add to the main queue:"))
-        lay.addWidget(lw)
-        h = QtWidgets.QHBoxLayout()
-        allb = QtWidgets.QPushButton("Check all")
-        noneb = QtWidgets.QPushButton("Uncheck all")
-        allb.clicked.connect(lambda: [lw.item(i).setCheckState(Qt.CheckState.Checked) for i in range(lw.count())])
-        noneb.clicked.connect(lambda: [lw.item(i).setCheckState(Qt.CheckState.Unchecked) for i in range(lw.count())])
-        h.addWidget(allb)
-        h.addWidget(noneb)
-        h.addStretch(1)
-        self_start = QtWidgets.QCheckBox("Start queue now")
-        self_start.setChecked(True)
-        h.addWidget(self_start)
-        lay.addLayout(h)
-        bb = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Ok |
-                                        QtWidgets.QDialogButtonBox.StandardButton.Cancel)
-        bb.accepted.connect(dlg.accept)
-        bb.rejected.connect(dlg.reject)
-        lay.addWidget(bb)
+    def on_browser_links(self, links, title="Download all links"):
+        if not links:
+            return
+        dlg = LinksDialog(self.s, links, self, title)
+        self.show_window()
         if not dialog_accepted(exec_(dlg)):
             return
-        for i in range(lw.count()):
-            item = lw.item(i)
-            if item.checkState() == Qt.CheckState.Checked:
-                l = item.data(Qt.ItemDataRole.UserRole)
-                url = l["url"]
-                name = url.split("?")[0].rstrip("/").rsplit("/", 1)[-1] or "download"
-                from urllib.parse import unquote
-                it = self.m.new_item(url, unquote(name), referer=l.get("referer", ""),
-                                     cookies=l.get("cookies", ""))
-                self.m.add(it, start=False, queue=MAIN_QUEUE)
-        if self_start.isChecked():
+        from urllib.parse import unquote
+        added = 0
+        for l in dlg.selected_links():
+            url = l["url"]
+            common = dict(referer=l.get("referer", ""), cookies=l.get("cookies", ""),
+                          user_agent=l.get("user_agent", ""), description=l.get("description", ""))
+            if l.get("kind") == KIND_MEDIA:
+                name = l.get("filename") or "video.mp4"
+                it = self.m.new_item(url, name, l.get("save_dir"), l.get("category"), kind=KIND_MEDIA,
+                                     media_format=l.get("media_format", ""), media_title=l.get("media_title", ""),
+                                     page_url=l.get("page_url") or url, size=l.get("size") or -1, **common)
+            else:
+                info = l.get("_info") or {}
+                name = l.get("filename") or unquote(url.split("?")[0].rstrip("/").rsplit("/", 1)[-1]) or "download"
+                it = self.m.new_item(url, name, l.get("save_dir"), l.get("category"),
+                                     size=info.get("size", l.get("size") or -1),
+                                     resumable=info.get("resumable", False),
+                                     auto_name=not (l.get("filename") or info), **common)
+            self.m.add(it, start=False, queue=MAIN_QUEUE)
+            added += 1
+        if added and dlg.start_now.isChecked():
             self.m.start_queue()
+        self.statusBar().showMessage(f"{added} download(s) added to the main queue", 6000)
+
+    def import_list(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Import download list", os.path.expanduser("~"),
+            "Download lists (*.txt *.ef2 *.json);;Text files (*.txt);;IDM export files (*.ef2);;"
+            "Tondar lists (*.json);;All files (*)")
+        if not path:
+            return
+        try:
+            links = listio.import_file(path)
+        except Exception as e:  # noqa: BLE001
+            QtWidgets.QMessageBox.warning(self, APP_NAME, f"Could not read the file:\n{e}")
+            return
+        if not links:
+            QtWidgets.QMessageBox.information(self, APP_NAME, "No download addresses were found in this file.")
+            return
+        self.on_browser_links(links, f"Import — {os.path.basename(path)}")
+
+    def export_list(self, selected_only):
+        items = [self.m.items[i] for i in self.selected_ids()] if selected_only else list(self.m.items.values())
+        if not items:
+            QtWidgets.QMessageBox.information(self, APP_NAME, "There is nothing to export.")
+            return
+        filters = {"Text file — one address per line (*.txt)": "txt",
+                   "IDM export file (*.ef2)": "ef2",
+                   "Tondar list with names and folders (*.json)": "json"}
+        default = os.path.join(os.path.expanduser("~"), "tondar-downloads.txt")
+        path, flt = QtWidgets.QFileDialog.getSaveFileName(self, "Export download list", default, ";;".join(filters))
+        if not path:
+            return
+        fmt = filters.get(flt) or listio.detect_format(path)
+        if not os.path.splitext(path)[1]:
+            path += "." + fmt
+        try:
+            n = listio.export_items(items, path, fmt)
+        except OSError as e:
+            QtWidgets.QMessageBox.warning(self, APP_NAME, f"Could not save the file:\n{e}")
+            return
+        self.statusBar().showMessage(f"Exported {n} download(s) to {path}", 8000)
 
     def _clipboard_changed(self):
         text = QtWidgets.QApplication.clipboard().text().strip()

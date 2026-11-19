@@ -381,13 +381,16 @@ class ProgressDialog(QtWidgets.QDialog):
         self.bar = QtWidgets.QProgressBar()
         self.bar.setRange(0, 1000)
         self.bar.setTextVisible(False)
-        self.bar.setFixedHeight(22)
+        from . import theme
+        self.bar.setFixedHeight(12 if theme.is_modern() else 22)
         sl.addWidget(self.bar)
 
         b = QtWidgets.QHBoxLayout()
         self.details_btn = QtWidgets.QPushButton("<< Hide details")
         self.pause_btn = QtWidgets.QPushButton("Pause")
         self.cancel_btn = QtWidgets.QPushButton("Cancel")
+        for btn in (self.details_btn, self.pause_btn, self.cancel_btn):
+            btn.setAutoDefault(False)
         b.addWidget(self.details_btn)
         b.addStretch(1)
         b.addWidget(self.pause_btn)
@@ -663,6 +666,16 @@ class OptionsDialog(QtWidgets.QDialog):
         nh.addWidget(self.notify)
         nh.addStretch(1)
         f.addLayout(nh)
+        th = QtWidgets.QHBoxLayout()
+        th.addWidget(QtWidgets.QLabel("Appearance:"))
+        self.theme = QtWidgets.QComboBox()
+        for k, v in (("auto", "Modern (follow system light/dark)"), ("light", "Modern light"),
+                     ("dark", "Modern dark"), ("classic", "Classic")):
+            self.theme.addItem(v, k)
+        self.theme.setCurrentIndex(max(0, self.theme.findData(s.get("theme", "auto"))))
+        th.addWidget(self.theme)
+        th.addStretch(1)
+        f.addLayout(th)
         f.addStretch(1)
         tabs.addTab(w, "General")
 
@@ -799,6 +812,7 @@ class OptionsDialog(QtWidgets.QDialog):
         s["show_progress_dialog"] = self.progress.isChecked()
         s["show_complete_dialog"] = self.complete.isChecked()
         s["notifications"] = self.notify.currentData()
+        s["theme"] = self.theme.currentData()
         s["capture_extensions"] = sorted({e.lower().lstrip(".") for e in self.exts.toPlainText().split() if e})
         s["capture_min_size_kb"] = self.min_size.value()
         s["download_dir"] = self.base.text().strip()
@@ -975,3 +989,252 @@ def about(parent):
         "<p>Segmented download accelerator for Ubuntu with browser integration "
         "and video grabbing (powered by yt-dlp).</p>"
         f"<p>Helper tools folder: <code>{BIN_DIR}</code></p>")
+
+
+# ===========================================================================
+class _ProbeSignals(QtCore.QObject):
+    result = Signal(int, object)          # row, info dict (or {"error": ...})
+
+
+class _SortItem(QtWidgets.QTreeWidgetItem):
+    """Sorts the Size column by bytes, everything else as text."""
+    def __lt__(self, other):
+        col = self.treeWidget().sortColumn() if self.treeWidget() else 0
+        if col == 1:
+            return (self.data(1, Qt.ItemDataRole.UserRole) or -1) < (other.data(1, Qt.ItemDataRole.UserRole) or -1)
+        return self.text(col).lower() < other.text(col).lower()
+
+
+class LinksDialog(QtWidgets.QDialog):
+    """'Download all links' / import window: probes every link for size and type."""
+    COLS = ["File name", "Size", "Type", "Address"]
+    WORKERS = 8
+
+    def __init__(self, settings, links, parent=None, title="Download all links"):
+        super().__init__(parent)
+        from concurrent.futures import ThreadPoolExecutor
+        from ..engine import probe
+        self.s = settings
+        self.links = [dict(l) for l in links if re.match(r"^(https?|ftp)://", l.get("url", ""), re.I)]
+        self.touched = set()
+        self.n_done = 0
+        self.closed = False
+        self.setWindowTitle(title)
+        self.setWindowIcon(icons.icon("app"))
+        self.resize(980, 600)
+        lay = QtWidgets.QVBoxLayout(self)
+
+        top = QtWidgets.QHBoxLayout()
+        self.filter = QtWidgets.QLineEdit()
+        self.filter.setObjectName("search")
+        self.filter.setPlaceholderText("Filter by name or address...")
+        self.filter.setClearButtonEnabled(True)
+        top.addWidget(self.filter, 1)
+        self.show_pages = QtWidgets.QCheckBox("Show web pages")
+        top.addWidget(self.show_pages)
+        lay.addLayout(top)
+
+        self.tree = QtWidgets.QTreeWidget()
+        self.tree.setHeaderLabels(self.COLS)
+        self.tree.setRootIsDecorated(False)
+        self.tree.setUniformRowHeights(True)
+        self.tree.setSortingEnabled(True)
+        self.tree.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
+        hdr = self.tree.header()
+        hdr.resizeSection(0, 360)
+        hdr.resizeSection(1, 90)
+        hdr.resizeSection(2, 110)
+        lay.addWidget(self.tree, 1)
+
+        self.status = QtWidgets.QLabel()
+        self.status.setObjectName("hint")
+        lay.addWidget(self.status)
+
+        bottom = QtWidgets.QHBoxLayout()
+        for text, state in (("Check all", True), ("Uncheck all", False)):
+            b = QtWidgets.QPushButton(text)
+            b.clicked.connect(lambda _=False, st=state: self._check_visible(st))
+            bottom.addWidget(b)
+        sel = QtWidgets.QPushButton("Check selected")
+        sel.clicked.connect(self._check_selected)
+        bottom.addWidget(sel)
+        bottom.addStretch(1)
+        self.start_now = QtWidgets.QCheckBox("Start queue now")
+        self.start_now.setChecked(True)
+        bottom.addWidget(self.start_now)
+        cancel = QtWidgets.QPushButton("Cancel")
+        self.ok = QtWidgets.QPushButton("Add to queue")
+        self.ok.setDefault(True)
+        cancel.clicked.connect(self.reject)
+        self.ok.clicked.connect(self.accept)
+        bottom.addWidget(cancel)
+        bottom.addWidget(self.ok)
+        lay.addLayout(bottom)
+
+        self.tree.setSortingEnabled(False)
+        for i, l in enumerate(self.links):
+            name = l.get("filename") or self._name_from_url(l["url"])
+            it = _SortItem([name, "", "checking..." if l.get("kind") != KIND_MEDIA else "Video",
+                                            l["url"]])
+            it.setData(0, Qt.ItemDataRole.UserRole, i)
+            it.setIcon(0, icons.icon(self.s.category_for(name)))
+            it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            it.setCheckState(0, Qt.CheckState.Checked if self._wanted(name) or l.get("kind") == KIND_MEDIA
+                             else Qt.CheckState.Unchecked)
+            it.setTextAlignment(1, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            if (l.get("size") or 0) > 0:
+                it.setText(1, human_size(l["size"]))
+                it.setData(1, Qt.ItemDataRole.UserRole, l["size"])
+            self.tree.addTopLevelItem(it)
+            l["_item"] = it
+        self.tree.setSortingEnabled(True)
+        self.tree.sortByColumn(3, Qt.SortOrder.AscendingOrder)
+        self.tree.itemChanged.connect(self._item_changed)
+        self.filter.textChanged.connect(self._apply_filter)
+        self.show_pages.toggled.connect(self._apply_filter)
+
+        # probe every link in the background
+        self.sig = _ProbeSignals(self)
+        self.sig.result.connect(self._on_result)
+        self.pool = ThreadPoolExecutor(max_workers=self.WORKERS)
+        timeout = min(12, self.s["timeout"])
+        for i, l in enumerate(self.links):
+            if l.get("kind") == KIND_MEDIA:
+                self.n_done += 1
+                continue
+            headers = {"User-Agent": l.get("user_agent") or self.s["user_agent"]}
+            if l.get("referer"):
+                headers["Referer"] = l["referer"]
+            if l.get("cookies"):
+                headers["Cookie"] = l["cookies"]
+
+            def job(i=i, url=l["url"], headers=headers):
+                if self.closed:
+                    return
+                try:
+                    info = probe(url, headers, self.s["proxy"], self.s["use_system_proxy"], timeout)
+                except Exception as e:  # noqa: BLE001
+                    info = {"error": str(e)[:120]}
+                if not self.closed:
+                    self.sig.result.emit(i, info)
+            self.pool.submit(job)
+        self._update_status()
+
+    # --------------------------------------------------------------
+    @staticmethod
+    def _name_from_url(url):
+        return urllib.parse.unquote(url.split("?")[0].split("#")[0].rstrip("/").rsplit("/", 1)[-1]) or url
+
+    def _wanted(self, name):
+        ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+        return ext in self.s["capture_extensions"]
+
+    def _item_changed(self, item, col):
+        if col == 0:
+            self.touched.add(item.data(0, Qt.ItemDataRole.UserRole))
+            self._update_status()
+
+    def _on_result(self, i, info):
+        if self.closed:
+            return
+        self.n_done += 1
+        l = self.links[i]
+        it = l["_item"]
+        self.tree.blockSignals(True)
+        if "error" in info:
+            it.setText(2, "Unreachable")
+            it.setToolTip(2, info["error"])
+            it.setForeground(2, QtGui.QBrush(QtGui.QColor("#dc2626")))
+            l["_page"] = None
+            if i not in self.touched:
+                it.setCheckState(0, Qt.CheckState.Unchecked)
+        else:
+            ctype = (info.get("content_type") or "").split(";")[0].strip().lower()
+            page = ctype in ("text/html", "application/xhtml+xml")
+            l["_page"] = page
+            l["_info"] = info
+            if not page:
+                name = l.get("filename") or info["filename"]
+                it.setText(0, name)
+                it.setIcon(0, icons.icon(self.s.category_for(name)))
+                l["filename"] = name
+            size = info.get("size", -1)
+            l["size"] = size
+            it.setText(1, human_size(size) if size and size > 0 else "")
+            it.setData(1, Qt.ItemDataRole.UserRole, size)
+            it.setText(2, "Web page" if page else self._type_label(ctype, l.get("filename", "")))
+            if i not in self.touched:
+                want = not page and (self._wanted(l.get("filename", "")) or
+                                     ctype.startswith(("video/", "audio/")))
+                it.setCheckState(0, Qt.CheckState.Checked if want else Qt.CheckState.Unchecked)
+        self.tree.blockSignals(False)
+        self._apply_filter_one(l)
+        self._update_status()
+
+    def _type_label(self, ctype, name):
+        cat = self.s.category_for(name)
+        if cat != GENERAL:
+            return cat.rstrip("s") if cat in ("Documents", "Programs") else cat
+        if ctype.startswith("video/"):
+            return "Video"
+        if ctype.startswith("audio/"):
+            return "Music"
+        return "File"
+
+    def _apply_filter_one(self, l):
+        it = l["_item"]
+        q = self.filter.text().strip().lower()
+        hide = (l.get("_page") and not self.show_pages.isChecked()) or \
+            (q and q not in it.text(0).lower() and q not in l["url"].lower())
+        it.setHidden(bool(hide))
+
+    def _apply_filter(self, *_):
+        for l in self.links:
+            self._apply_filter_one(l)
+        self._update_status()
+
+    def _check_visible(self, state):
+        self.tree.blockSignals(True)
+        for l in self.links:
+            it = l["_item"]
+            if not it.isHidden():
+                it.setCheckState(0, Qt.CheckState.Checked if state else Qt.CheckState.Unchecked)
+                self.touched.add(self.links.index(l))
+        self.tree.blockSignals(False)
+        self._update_status()
+
+    def _check_selected(self):
+        self.tree.blockSignals(True)
+        for it in self.tree.selectedItems():
+            it.setCheckState(0, Qt.CheckState.Checked)
+            self.touched.add(it.data(0, Qt.ItemDataRole.UserRole))
+        self.tree.blockSignals(False)
+        self._update_status()
+
+    def selected_links(self):
+        return [l for l in self.links if l["_item"].checkState(0) == Qt.CheckState.Checked]
+
+    def _update_status(self):
+        files = [l for l in self.links if l.get("_page") is False or l.get("kind") == KIND_MEDIA]
+        pages = sum(1 for l in self.links if l.get("_page"))
+        sel = self.selected_links()
+        sel_size = sum(l.get("size", 0) for l in sel if (l.get("size") or 0) > 0)
+        unknown = sum(1 for l in sel if not (l.get("size") or 0) > 0)
+        txt = f"Checked: {len(sel)} file(s)"
+        if sel_size:
+            txt += f", {human_size(sel_size)}" + (f" + {unknown} of unknown size" if unknown else "")
+        txt += f"     |     Found {len(files)} file(s)"
+        if pages:
+            txt += f", {pages} web page(s)" + ("" if self.show_pages.isChecked() else " hidden")
+        if self.n_done < len(self.links):
+            txt += f"     |     Checking links {self.n_done}/{len(self.links)}..."
+        self.status.setText(txt)
+        self.ok.setEnabled(bool(sel))
+
+    def done(self, r):  # QDialog.done override: stop probing
+        self.closed = True
+        try:
+            self.pool.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            self.pool.shutdown(wait=False)
+        super().done(r)

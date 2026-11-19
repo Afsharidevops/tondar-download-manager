@@ -78,6 +78,8 @@ def main(argv=None):
     from .ui.main_window import MainWindow
 
     settings = Settings()
+    from .ui import theme
+    theme.apply(app, settings.get("theme", "auto"))
     from .media import auto_update
     auto_update(settings)
     manager = DownloadManager(settings)
