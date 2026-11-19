@@ -8,7 +8,7 @@ import time
 
 from .qt import QtCore, Signal
 from .config import STATE_FILE, DATA_DIR
-from .engine import HttpDownloader, SpeedLimiter, probe, unique_path, PART_SUFFIX
+from .engine import HttpDownloader, SpeedLimiter, probe, unique_path, PART_SUFFIX, replace_with_retry
 from .media import MediaDownloader, probe_media
 from .models import (DownloadItem, QUEUED, WAITING, DOWNLOADING, PAUSED, COMPLETED, ERROR,
                      CONNECTING, KIND_MEDIA)
@@ -85,7 +85,7 @@ class DownloadManager(QtCore.QObject):
             json.dump({"downloads": [i.to_dict() for i in self.items.values()]}, f,
                       ensure_ascii=False)
         os.chmod(tmp, 0o600)
-        os.replace(tmp, STATE_FILE)
+        replace_with_retry(tmp, STATE_FILE)
         self._dirty = False
 
     def mark_dirty(self):

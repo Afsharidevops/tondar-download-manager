@@ -53,7 +53,7 @@ def make_handler(root, ranges=True, throttle=0):
                         left -= len(chunk)
                         if throttle:
                             time.sleep(len(chunk) / throttle)
-                except (BrokenPipeError, ConnectionResetError):
+                except (ConnectionError, OSError):   # client closed early (also WinError 10053)
                     pass
     return H
 

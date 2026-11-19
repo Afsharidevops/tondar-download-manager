@@ -122,7 +122,8 @@ def _install_file(data, dest):
     tmp = dest.with_name(dest.name + ".new")
     tmp.write_bytes(data)
     tmp.chmod(0o755)
-    os.replace(tmp, dest)
+    from .engine import replace_with_retry
+    replace_with_retry(tmp, dest)
 
 
 def install_tools(settings, log=print, deno=True):

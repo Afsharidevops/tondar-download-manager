@@ -150,6 +150,19 @@ def sanitize_filename(name: str) -> str:
     return name[:240]
 
 
+def replace_with_retry(src, dst, tries=40):
+    """os.replace, but survive Windows' brief locks on fresh files (Defender / Search indexer
+    scanning the file just after it was written: WinError 32 / 5)."""
+    for i in range(tries):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if i == tries - 1:
+                raise
+            time.sleep(min(0.1 * (i + 1), 0.5))
+
+
 def unique_path(path: str) -> str:
     if not os.path.exists(path) and not os.path.exists(path + PART_SUFFIX):
         return path
@@ -296,6 +309,8 @@ class HttpDownloader:
                 self._segmented(part)
             else:
                 self._single(part)
+            # Windows cannot rename (or let others open) a file that is still open
+            self._close_fd()
             if self.fatal:
                 raise self.fatal
             if self.stop_event.is_set():
@@ -306,18 +321,22 @@ class HttpDownloader:
             if os.path.exists(final):
                 final = unique_path(final)
                 it.filename = os.path.basename(final)
-            os.replace(part, final)
+            replace_with_retry(part, final)
             it.segments = []
             self.on_done(self, "completed", None)
         except Exception as e:  # noqa: BLE001
             self._persist()
             self.on_done(self, "error", _describe_error(e))
         finally:
-            if self.fd is not None:
-                try:
-                    os.close(self.fd)
-                except OSError:
-                    pass
+            self._close_fd()
+
+    def _close_fd(self):
+        if self.fd is not None:
+            try:
+                os.close(self.fd)
+            except OSError:
+                pass
+            self.fd = None
 
     def _persist(self):
         with self.lock:
@@ -365,6 +384,7 @@ class HttpDownloader:
             if any(s.remaining for s in self.segments):
                 self.fatal = FatalError("Connection closed before the file was complete")
         os.fsync(self.fd)
+        self._close_fd()
 
     def _next_segment(self):
         with self.lock:

@@ -97,7 +97,8 @@ class Settings:
             tmp = SETTINGS_FILE.with_suffix(".tmp")
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(self.data, f, indent=2, ensure_ascii=False)
-            os.replace(tmp, SETTINGS_FILE)
+            from .engine import replace_with_retry
+            replace_with_retry(tmp, SETTINGS_FILE)
 
     def __getitem__(self, k):
         return self.data[k]
