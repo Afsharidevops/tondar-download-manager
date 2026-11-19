@@ -705,7 +705,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.m.item_updated.emit(it.id)
             self.m.mark_dirty()
             self.statusBar().showMessage(
-                f"Waiting for a new link for “{it.filename}”: play/download it again in the browser", 15000)
+                f"Waiting for a new link for “{it.filename}”: play it in the browser and click "
+                "Download this video (or the download link) again", 60000)
 
     def _match_unfinished(self, data, media):
         """An unfinished download that this new browser request probably continues."""
@@ -757,6 +758,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 setattr(it, k, data[k])
         if data.get("origin"):
             it.headers = dict(it.headers or {}, Origin=data["origin"])
+        if data.get("tabUrl"):
+            it.web_page = data["tabUrl"]
         if isinstance(data.get("cookie_jar"), list):
             it.cookie_jar = data["cookie_jar"]
         it.error, it.refresh_wait = "", False
@@ -775,7 +778,8 @@ class MainWindow(QtWidgets.QMainWindow):
         req = {"url": data.get("url"), "referer": data.get("referer", ""),
                "cookies": data.get("cookies", ""), "filename": data.get("filename", ""),
                "user_agent": data.get("userAgent", ""), "forced_file": True,
-               "headers": {"Origin": data["origin"]} if data.get("origin") else {}}
+               "headers": {"Origin": data["origin"]} if data.get("origin") else {},
+               "web_page": data.get("tabUrl", "")}
         if self.s["show_file_info_dialog"]:
             self.new_download(req)
         else:
@@ -783,7 +787,7 @@ class MainWindow(QtWidgets.QMainWindow):
             name = req["filename"] or unquote(urlsplit(req["url"]).path.rstrip("/").rsplit("/", 1)[-1]) or "download"
             it = self.m.new_item(req["url"], name, referer=req["referer"], cookies=req["cookies"],
                                  user_agent=req["user_agent"], auto_name=not req["filename"],
-                                 headers=dict(req["headers"]))
+                                 headers=dict(req["headers"]), web_page=req["web_page"])
             self.m.add(it, start=True)
             if self.s["show_progress_dialog"]:
                 self.show_progress(it.id)
@@ -808,7 +812,8 @@ class MainWindow(QtWidgets.QMainWindow):
                "referer": data.get("referer", ""), "cookies": data.get("cookies", ""),
                "user_agent": data.get("userAgent", ""), "title": title,
                "headers": {"Origin": data["origin"]} if data.get("origin") else {},
-               "cookie_jar": data.get("cookie_jar") if isinstance(data.get("cookie_jar"), list) else None}
+               "cookie_jar": data.get("cookie_jar") if isinstance(data.get("cookie_jar"), list) else None,
+               "web_page": data.get("tabUrl", "")}
         if self.s["show_file_info_dialog"] or not info:
             self.new_download(req)
             return
@@ -819,7 +824,7 @@ class MainWindow(QtWidgets.QMainWindow):
                              media_format=o["id"], media_title=info["title"], size=o.get("size") or -1,
                              page_url=url, referer=req["referer"], cookies=req["cookies"],
                              user_agent=req["user_agent"], headers=dict(req["headers"]),
-                             cookie_jar=req["cookie_jar"])
+                             cookie_jar=req["cookie_jar"], web_page=req["web_page"])
         self.m.add(it, start=True)
         if self.s["show_progress_dialog"]:
             self.show_progress(it.id)

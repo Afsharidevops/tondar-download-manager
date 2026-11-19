@@ -117,6 +117,31 @@ def stop_process(proc):
 
 
 # ------------------------------------------------------------------ desktop
+def open_url(url):
+    """Open a web page in the default browser. Returns True if a browser was started."""
+    try:
+        if IS_WIN:
+            os.startfile(url)  # noqa: S606
+            return True
+        if IS_MAC:
+            return subprocess.run(["open", url], timeout=10).returncode == 0
+        env = dict(os.environ)
+        for k in ("LD_LIBRARY_PATH", "QT_PLUGIN_PATH", "PYTHONPATH", "PYTHONHOME"):
+            env.pop(k, None)          # don't leak our environment into the browser
+        for cmd in (["xdg-open", url], ["gio", "open", url], ["sensible-browser", url],
+                    ["firefox", url], ["google-chrome", url], ["chromium", url]):
+            if which(cmd[0]):
+                try:
+                    subprocess.Popen(cmd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL, start_new_session=True)
+                    return True
+                except OSError:
+                    continue
+    except Exception:
+        pass
+    return False
+
+
 def open_folder(path):
     """Show the file selected in Explorer / Finder / the Linux file manager. Returns True if done."""
     try:

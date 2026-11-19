@@ -84,10 +84,10 @@ function baseName(p) {
   return (p || "").split(/[\\/]/).pop();
 }
 
-async function sendDownload(url, referer, filename, origin) {
+async function sendDownload(url, referer, filename, origin, tabUrl) {
   const cookies = await cookiesFor(url);
   return api("/download", { url, referer: referer || "", origin: origin || "", filename: filename || "",
-                            cookies, userAgent: navigator.userAgent });
+                            cookies, userAgent: navigator.userAgent, tabUrl: tabUrl || "" });
 }
 
 /* ---------------------------------------------------------------- downloads */
@@ -224,9 +224,10 @@ B.runtime.onMessage.addListener((msg, sender, reply) => {
                                              origin: msg.origin || "",
                                              title: msg.title || (msg.url !== msg.page ? sender.tab?.title : "") || "",
                                              cookies,
-                                             userAgent: navigator.userAgent, pageUrl: ref }));
+                                             userAgent: navigator.userAgent, pageUrl: ref,
+                                             tabUrl: sender.tab?.url || msg.page || "" }));
       } else if (msg.type === "file-download") {
-        reply(await sendDownload(msg.url, msg.referer, msg.filename || "", msg.origin || ""));
+        reply(await sendDownload(msg.url, msg.referer, msg.filename || "", msg.origin || "", sender.tab?.url));
       } else if (msg.type === "sniffed") {
         const m = tabMedia.get(sender.tab?.id);
         reply({ items: m ? [...m.values()] : [] });
@@ -259,7 +260,7 @@ B.runtime.onStartup?.addListener(buildMenus);
 B.contextMenus.onClicked.addListener(async (info, tab) => {
   try {
     if (info.menuItemId === "tondar-link") {
-      await sendDownload(info.linkUrl, tab?.url, "");
+      await sendDownload(info.linkUrl, tab?.url, "", "", tab?.url);
     } else if (info.menuItemId === "tondar-media") {
       const src = info.srcUrl && /^https?:/.test(info.srcUrl) ? info.srcUrl : null;
       // page URL first: yt-dlp knows the site and can offer all qualities

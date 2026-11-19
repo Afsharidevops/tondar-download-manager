@@ -313,7 +313,7 @@ class FileInfoDialog(QtWidgets.QDialog):
             self.s.save()
         common = dict(referer=self.req.get("referer", ""), cookies=self.req.get("cookies", ""),
                       user_agent=self.req.get("user_agent", ""), description=self.desc.text(),
-                      headers=self.req.get("headers") or {})
+                      headers=self.req.get("headers") or {}, web_page=self.req.get("web_page", ""))
         if self.is_media:
             o = self.quality.currentData()
             if not o:
@@ -578,13 +578,18 @@ class RefreshAddressDialog(QtWidgets.QDialog):
         lay.addWidget(title)
         hint = QtWidgets.QLabel(
             "Many sites give each download a temporary link. When it expires (or your internet connection "
-            "changes) the server refuses it. Get a fresh link and the download continues from where it stopped:"
-            "<ol><li><b>Open the page</b>, play the video / click the download link again, and choose the same "
-            "file or quality in Tondar - it will offer to continue this download; or</li>"
-            "<li>paste a new address below.</li></ol>")
+            "changes) the server refuses it. Get a fresh link and the download continues from where it stopped.")
         hint.setWordWrap(True)
-        hint.setTextFormat(Qt.TextFormat.RichText)
         lay.addWidget(hint)
+        steps = QtWidgets.QLabel(
+            "1. Click <b>Open the page in the browser</b> (or open it yourself).\n"
+            "2. Play the video and click Tondar's <b>Download this video</b> button (for a file: click its "
+            "download link again) and choose the same quality.\n"
+            "3. Tondar asks to continue this download - answer <b>Yes</b>.\n\n"
+            "Or paste a new direct address below.".replace("\n", "<br>"))
+        steps.setWordWrap(True)
+        steps.setTextFormat(Qt.TextFormat.RichText)
+        lay.addWidget(steps)
         form = QtWidgets.QFormLayout()
         old = QtWidgets.QLineEdit(item.page_url or item.url)
         old.setReadOnly(True)
@@ -596,12 +601,18 @@ class RefreshAddressDialog(QtWidgets.QDialog):
         if re.match(r"^(https?|ftp)://\S+$", clip) and clip != (item.page_url or item.url):
             self.new.setText(clip)
         form.addRow("New address", self.new)
+        self.page = next((u for u in (item.web_page, item.referer)
+                          if re.match(r"^https?://", u or "") and not re.search(r"\.m3u8|\.mpd", u)), "")
+        self.page_edit = QtWidgets.QLineEdit(self.page)
+        self.page_edit.setPlaceholderText("the web page where the video / download link is")
+        self.page_edit.setCursorPosition(0)
+        form.addRow("Web page", self.page_edit)
         lay.addLayout(form)
         b = QtWidgets.QHBoxLayout()
-        self.page = item.referer if re.match(r"^https?://", item.referer or "") else ""
         open_page = QtWidgets.QPushButton("Open the page in the browser")
         open_page.setEnabled(bool(self.page))
-        open_page.setToolTip(self.page)
+        self.page_edit.textChanged.connect(
+            lambda t: open_page.setEnabled(bool(re.match(r"^https?://\S+$", t.strip()))))
         open_page.clicked.connect(self._open_page)
         b.addWidget(open_page)
         b.addStretch(1)
@@ -615,8 +626,14 @@ class RefreshAddressDialog(QtWidgets.QDialog):
         lay.addLayout(b)
 
     def _open_page(self):
+        from ..osutil import open_url
+        url = self.page_edit.text().strip()
+        self.page = url
+        if not (open_url(url) or QtGui.QDesktopServices.openUrl(QtCore.QUrl(url))):
+            QtWidgets.QApplication.clipboard().setText(url)
+            QtWidgets.QMessageBox.warning(self, APP_NAME, "Could not start the web browser.\n"
+                                          "The address was copied - paste it into your browser:\n\n" + url)
         self.open_page_clicked = True
-        QtGui.QDesktopServices.openUrl(QtCore.QUrl(self.page))
         self.reject()
 
     def _ok(self):
