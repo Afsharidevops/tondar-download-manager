@@ -241,7 +241,7 @@ class FileInfoDialog(QtWidgets.QDialog):
             pre = self.req.get("media_option")
             sel = 0
             for i, o in enumerate(info["options"]):
-                size = human_size(o["size"]) if o.get("size") else ""
+                size = (("~" if o.get("approx") else "") + human_size(o["size"])) if o.get("size") else ""
                 self.quality.addItem(icons.icon("Music" if o["type"] != "video" else "Video"),
                                      f"{o['label']}" + (f"   ({size})" if size else ""), o)
                 if pre and o["id"] == pre:
@@ -279,7 +279,8 @@ class FileInfoDialog(QtWidgets.QDialog):
         self.save_as.setEditText(str(self.s.dir_for_category(cat) / name))
         self.remember.setText(f"Remember this path for \"{cat}\" category")
         self.size_lbl.setText(f"{self.media_info['title']}\nSize: "
-                              + (human_size(o["size"]) if o.get("size") else "unknown"))
+                              + ((("about " if o.get("approx") else "") + human_size(o["size"]))
+                                 if o.get("size") else "unknown"))
 
     def _set_filename(self, name):
         cat = self.s.category_for(name)

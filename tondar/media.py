@@ -179,12 +179,27 @@ def probe_media(url, settings, playlist=False, timeout=90):
     return build_options(info)
 
 
-def _fsize(f):
-    return f.get("filesize") or f.get("filesize_approx") or 0
+def _fsize(f, duration=0):
+    """(bytes, approximate?) - exact size, yt-dlp's estimate, or bitrate x duration."""
+    if not f:
+        return 0, False
+    if f.get("filesize"):
+        return int(f["filesize"]), False
+    if f.get("filesize_approx"):
+        return int(f["filesize_approx"]), True
+    rate = f.get("tbr") or ((f.get("vbr") or 0) + (f.get("abr") or 0))
+    if rate and duration:
+        return int(rate * 1000 / 8 * duration), True     # kbit/s -> bytes
+    return 0, True
+
+
+def _is_stream(f):
+    return str(f.get("protocol", "")).startswith(("m3u8", "http_dash_segments"))
 
 
 def build_options(info):
     title = info.get("title") or "video"
+    duration = info.get("duration") or 0
     formats = info.get("formats") or []
     if not formats and info.get("url"):
         formats = [info]
@@ -210,15 +225,16 @@ def build_options(info):
             if not h:
                 continue
             cur = by_height.get(h)
-            # prefer H.264 MP4 (plays everywhere), then highest bitrate
+            # prefer H.264 MP4 (plays everywhere), then direct files over HLS/DASH
+            # fragments (known size, faster), then frame rate and bitrate
             score = (1 if (f.get("ext") == "mp4" and str(f.get("vcodec", "")).startswith("avc")) else 0,
-                     f.get("fps") or 0, f.get("tbr") or 0)
+                     0 if _is_stream(f) else 1, f.get("fps") or 0, f.get("tbr") or 0)
             if cur is None or score > cur[0]:
                 by_height[h] = (score, f)
     for f in muxed:
         h = f.get("height") or 0
         cur = by_height.get(h)
-        score = (2, f.get("fps") or 0, f.get("tbr") or 0)   # no merge needed -> preferred
+        score = (2, 0 if _is_stream(f) else 1, f.get("fps") or 0, f.get("tbr") or 0)  # no merge needed
         if cur is None or (h and score > cur[0]):
             by_height[h] = (score, f)
 
@@ -228,25 +244,32 @@ def build_options(info):
         ext = "mp4" if (needs_audio and f.get("ext") in ("mp4", "m4v")) or f.get("ext") == "mp4" else (
             "mkv" if needs_audio and f.get("ext") == "webm" and pair_audio and pair_audio.get("ext") != "webm"
             else f.get("ext") or "mp4")
-        size = _fsize(f) + (_fsize(pair_audio) if needs_audio and pair_audio else 0)
+        vsize, vapprox = _fsize(f, duration)
+        asize, aapprox = _fsize(pair_audio, duration) if needs_audio else (0, False)
+        # unknown video size -> report unknown, never just the audio part
+        size, approx = (vsize + asize, vapprox or aapprox) if vsize else (0, True)
         sel = f"{f['format_id']}+{pair_audio['format_id']}" if needs_audio else f["format_id"]
         fps = f" {int(f['fps'])}fps" if f.get("fps") and f["fps"] > 30 else ""
         label = f"{ext.upper()} {h}p{fps}" if h else f"{ext.upper()} " + (
             f.get("format_note") or f.get("resolution") or "original quality")
-        options.append({"id": sel, "label": label, "ext": ext, "size": size,
+        options.append({"id": sel, "label": label, "ext": ext, "size": size, "approx": approx,
                         "type": "video", "height": h})
 
     if pair_audio:
         abr = int(pair_audio.get("abr") or 0)
+        asize, aapprox = _fsize(pair_audio, duration)
         options.append({"id": pair_audio["format_id"], "label": f"{pair_audio.get('ext', 'audio').upper()} audio"
                         + (f" {abr} kbps" if abr else ""), "ext": pair_audio.get("ext", "m4a"),
-                        "size": _fsize(pair_audio), "type": "audio"})
+                        "size": asize, "approx": aapprox, "type": "audio"})
         if has_ffmpeg:
+            # MP3 is re-encoded at ~VBR V0 (~245 kbps) - estimate from duration
+            mp3 = int(245 * 1000 / 8 * duration) if duration else asize
             options.append({"id": "bestaudio/best", "label": "MP3 audio (converted)", "ext": "mp3",
-                            "size": _fsize(pair_audio), "type": "mp3"})
+                            "size": mp3, "approx": True, "type": "mp3"})
     if not options:
+        size, approx = _fsize(info, duration)
         options.append({"id": "best", "label": "Best quality", "ext": info.get("ext") or "mp4",
-                        "size": _fsize(info), "type": "video"})
+                        "size": size, "approx": approx, "type": "video"})
     return {
         "title": title,
         "thumbnail": info.get("thumbnail") or "",

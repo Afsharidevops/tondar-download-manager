@@ -169,7 +169,8 @@
     for (const o of data.options) {
       const row = el("div", "it");
       row.appendChild(el("span", "", o.label));
-      row.appendChild(el("span", "sz", human(o.size)));
+      const sz = human(o.size);
+      row.appendChild(el("span", "sz", sz ? (o.approx ? "~" + sz : sz) : "size unknown"));
       row.addEventListener("click", () => act({ type: "media-download", url: pageUrl, format: o.id }));
       frag.appendChild(row);
     }
