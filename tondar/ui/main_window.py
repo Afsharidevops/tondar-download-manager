@@ -13,7 +13,8 @@ from ..manager import MAIN_QUEUE
 from . import icons, theme
 from .. import listio
 from .dialogs import (AddUrlDialog, FileInfoDialog, ProgressDialog, CompleteDialog, OptionsDialog,
-                      SchedulerDialog, LinksDialog, open_path, open_folder, about, run_tools_update)
+                      SchedulerDialog, LinksDialog, RefreshAddressDialog, open_path, open_folder, about,
+                      run_tools_update)
 
 COLS = ["File Name", "Q", "Size", "Status", "Time left", "Transfer rate", "Last Try Date", "Description"]
 SORT_ROLE = Qt.ItemDataRole.UserRole + 1
@@ -278,6 +279,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.a_redownload = A("Redownload", None, self.redownload_selected)
         self.a_to_queue = A("Add to queue", "queue", self.queue_selected)
         self.a_copy = A("Copy address", None, self.copy_url)
+        self.a_refresh = A("Refresh address…", None, self.refresh_address)
         self.a_exit = A("Exit", None, self.quit_app, "Ctrl+Q")
         self.a_tools = A("Update video engine (yt-dlp)", None, lambda: run_tools_update(self, self.s))
         self.a_import = A("Import list...", None, self.import_list, "Ctrl+I")
@@ -524,6 +526,7 @@ class MainWindow(QtWidgets.QMainWindow):
             pass
         d = ProgressDialog(self.m, self.s, item_id)
         d.open_complete.connect(self.show_complete)
+        d.refresh_requested.connect(self.refresh_address)
         d.destroyed.connect(lambda *_: self.progress_dialogs.pop(item_id, None))
         self.progress_dialogs[item_id] = d
         d.show()
@@ -667,8 +670,10 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self.selected_ids():
             return
         menu = QtWidgets.QMenu(self)
+        unfinished = any(self.m.items[i].status != COMPLETED for i in self.selected_ids())
+        self.a_refresh.setEnabled(unfinished and len(self.selected_ids()) == 1)
         for a in (self.a_open, self.a_open_folder, None, self.a_resume, self.a_stop, self.a_redownload,
-                  None, self.a_to_queue, self.a_copy, self.a_export_sel, None, self.a_delete):
+                  self.a_refresh, None, self.a_to_queue, self.a_copy, self.a_export_sel, None, self.a_delete):
             menu.addSeparator() if a is None else menu.addAction(a)
         exec_(menu, self.view.viewport().mapToGlobal(pos))
 
@@ -684,8 +689,89 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.m.start(i)
             self.show_progress(i)
 
+    # ------------------------------------------------ refresh address
+    def refresh_address(self, item_id=None):
+        ids = [item_id] if isinstance(item_id, str) else self.selected_ids()
+        it = self.m.items.get(ids[0]) if ids else None
+        if not it or it.status == COMPLETED:
+            return
+        if it.id in self.m.engines:
+            self.m.stop(it.id)
+        dlg = RefreshAddressDialog(it, self)
+        if dialog_accepted(exec_(dlg)):
+            self._apply_new_address(it, {"url": dlg.value()})
+        elif dlg.open_page_clicked:
+            it.refresh_wait = True
+            self.m.item_updated.emit(it.id)
+            self.m.mark_dirty()
+            self.statusBar().showMessage(
+                f"Waiting for a new link for “{it.filename}”: play/download it again in the browser", 15000)
+
+    def _match_unfinished(self, data, media):
+        """An unfinished download that this new browser request probably continues."""
+        from ..media import media_filename
+        import os as _os
+        cands = [it for it in self.m.items.values()
+                 if it.status != COMPLETED and it.id not in self.m.engines
+                 and (it.kind == KIND_MEDIA) == media]
+        waiting = [it for it in cands if it.refresh_wait]
+        if len(waiting) == 1:
+            return waiting[0]
+        if media:
+            title = (data.get("title") or "").strip()
+            if not title:
+                return None
+            base = _os.path.splitext(media_filename(title, "x"))[0]
+            for it in cands:
+                if it.media_title == title or _os.path.splitext(it.filename)[0] == base:
+                    return it
+            return None
+        from urllib.parse import unquote, urlsplit
+        name = data.get("filename") or unquote(urlsplit(data.get("url", "")).path.rstrip("/").rsplit("/", 1)[-1])
+        for it in cands:
+            if name and it.filename.lower() == name.lower() and it.downloaded > 0:
+                return it
+        return None
+
+    def _offer_continue(self, it, data, media):
+        pct = f" ({it.progress * 100:.0f}%)" if it.size > 0 else ""
+        r = QtWidgets.QMessageBox.question(
+            self, APP_NAME, f"Continue the unfinished download\n\n{it.filename}{pct}\n\n"
+            "with this new address? (Choose No to start a separate new download.)")
+        it.refresh_wait = False
+        if r != QtWidgets.QMessageBox.StandardButton.Yes:
+            return False
+        self._apply_new_address(it, data)
+        return True
+
+    def _apply_new_address(self, it, data):
+        url = data["url"]
+        it.url = url
+        it.final_url = ""
+        if it.kind == KIND_MEDIA:
+            it.page_url = url
+            if data.get("format"):
+                it.media_format = data["format"]
+        for k in ("referer", "cookies"):
+            if data.get(k):
+                setattr(it, k, data[k])
+        if data.get("origin"):
+            it.headers = dict(it.headers or {}, Origin=data["origin"])
+        if isinstance(data.get("cookie_jar"), list):
+            it.cookie_jar = data["cookie_jar"]
+        it.error, it.refresh_wait = "", False
+        if it.status == ERROR:
+            it.status = PAUSED
+        self.m.mark_dirty()
+        self.m.start(it.id)       # same file name: segments / yt-dlp .part files are reused
+        if self.s["show_progress_dialog"]:
+            self.show_progress(it.id)
+
     # ------------------------------------------------- browser bridge
     def on_browser_download(self, data):
+        old = self._match_unfinished(data, media=False)
+        if old and self._offer_continue(old, data, media=False):
+            return
         req = {"url": data.get("url"), "referer": data.get("referer", ""),
                "cookies": data.get("cookies", ""), "filename": data.get("filename", ""),
                "user_agent": data.get("userAgent", ""), "forced_file": True,
@@ -711,6 +797,10 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         info = self.media_cache.get(url)
         title = (data.get("title") or "").strip()
+        probe_title = title or (info or {}).get("title", "")
+        old = self._match_unfinished(dict(data, title=probe_title), media=True)
+        if old and self._offer_continue(old, data, media=True):
+            return
         if info and title:
             # streams have meaningless names (chunk.m3u8): use the page title instead
             info = dict(info, title=title)

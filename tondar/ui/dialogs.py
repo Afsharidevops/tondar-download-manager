@@ -343,6 +343,7 @@ class FileInfoDialog(QtWidgets.QDialog):
 class ProgressDialog(QtWidgets.QDialog):
     """Per-download status window (status, speed, connection list, segment map)."""
     open_complete = Signal(str)
+    refresh_requested = Signal(str)
 
     def __init__(self, manager, settings, item_id, parent=None):
         super().__init__(None)
@@ -386,10 +387,14 @@ class ProgressDialog(QtWidgets.QDialog):
         self.details_btn = QtWidgets.QPushButton("<< Hide details")
         self.pause_btn = QtWidgets.QPushButton("Pause")
         self.cancel_btn = QtWidgets.QPushButton("Cancel")
-        for btn in (self.details_btn, self.pause_btn, self.cancel_btn):
+        self.refresh_btn = QtWidgets.QPushButton("Refresh address…")
+        self.refresh_btn.setVisible(False)
+        self.refresh_btn.clicked.connect(lambda: self.refresh_requested.emit(self.id))
+        for btn in (self.details_btn, self.pause_btn, self.cancel_btn, self.refresh_btn):
             btn.setAutoDefault(False)
         b.addWidget(self.details_btn)
         b.addStretch(1)
+        b.addWidget(self.refresh_btn)
         b.addWidget(self.pause_btn)
         b.addWidget(self.cancel_btn)
         sl.addLayout(b)
@@ -506,6 +511,8 @@ class ProgressDialog(QtWidgets.QDialog):
         self.vals["Resume capability"].setText("Yes" if (it.resumable or it.kind == KIND_MEDIA) else "No")
         self.bar.setValue(int(it.progress * 1000))
         running = self.id in self.m.engines
+        self.refresh_btn.setVisible(it.status == ERROR or bool(it.refresh_wait))
+        self.vals["Status"].setWordWrap(True)
         self.pause_btn.setText("Pause" if running else "Resume")
         self.pause_btn.setEnabled(it.status != COMPLETED)
 
@@ -553,6 +560,75 @@ class ProgressDialog(QtWidgets.QDialog):
 
 
 # ===========================================================================
+class RefreshAddressDialog(QtWidgets.QDialog):
+    """Give an unfinished download a new address and continue where it stopped
+    (signed links expire, or stop working after the internet connection / IP changes)."""
+
+    def __init__(self, item, parent=None):
+        super().__init__(parent)
+        self.it = item
+        self.open_page_clicked = False
+        self.setWindowTitle("Refresh download address")
+        self.setWindowIcon(icons.icon("app"))
+        self.setMinimumWidth(640)
+        lay = QtWidgets.QVBoxLayout(self)
+        pct = f" ({item.progress * 100:.0f}% done)" if item.size > 0 else ""
+        title = QtWidgets.QLabel(f"<b>{item.filename}</b>{pct}")
+        title.setTextFormat(Qt.TextFormat.RichText)
+        lay.addWidget(title)
+        hint = QtWidgets.QLabel(
+            "Many sites give each download a temporary link. When it expires (or your internet connection "
+            "changes) the server refuses it. Get a fresh link and the download continues from where it stopped:"
+            "<ol><li><b>Open the page</b>, play the video / click the download link again, and choose the same "
+            "file or quality in Tondar - it will offer to continue this download; or</li>"
+            "<li>paste a new address below.</li></ol>")
+        hint.setWordWrap(True)
+        hint.setTextFormat(Qt.TextFormat.RichText)
+        lay.addWidget(hint)
+        form = QtWidgets.QFormLayout()
+        old = QtWidgets.QLineEdit(item.page_url or item.url)
+        old.setReadOnly(True)
+        old.setCursorPosition(0)
+        form.addRow("Current address", old)
+        self.new = QtWidgets.QLineEdit()
+        self.new.setPlaceholderText("https://...")
+        clip = QtWidgets.QApplication.clipboard().text().strip()
+        if re.match(r"^(https?|ftp)://\S+$", clip) and clip != (item.page_url or item.url):
+            self.new.setText(clip)
+        form.addRow("New address", self.new)
+        lay.addLayout(form)
+        b = QtWidgets.QHBoxLayout()
+        self.page = item.referer if re.match(r"^https?://", item.referer or "") else ""
+        open_page = QtWidgets.QPushButton("Open the page in the browser")
+        open_page.setEnabled(bool(self.page))
+        open_page.setToolTip(self.page)
+        open_page.clicked.connect(self._open_page)
+        b.addWidget(open_page)
+        b.addStretch(1)
+        cancel = QtWidgets.QPushButton("Cancel")
+        ok = QtWidgets.QPushButton("Use new address && resume")
+        ok.setDefault(True)
+        cancel.clicked.connect(self.reject)
+        ok.clicked.connect(self._ok)
+        b.addWidget(cancel)
+        b.addWidget(ok)
+        lay.addLayout(b)
+
+    def _open_page(self):
+        self.open_page_clicked = True
+        QtGui.QDesktopServices.openUrl(QtCore.QUrl(self.page))
+        self.reject()
+
+    def _ok(self):
+        if not re.match(r"^(https?|ftp)://\S+$", self.new.text().strip()):
+            QtWidgets.QMessageBox.warning(self, APP_NAME, "Please enter a valid address.")
+            return
+        self.accept()
+
+    def value(self):
+        return self.new.text().strip()
+
+
 class CompleteDialog(QtWidgets.QDialog):
     def __init__(self, settings, item, parent=None):
         super().__init__(None)

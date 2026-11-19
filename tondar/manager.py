@@ -13,7 +13,20 @@ from .media import MediaDownloader, probe_media
 from .models import (DownloadItem, QUEUED, WAITING, DOWNLOADING, PAUSED, COMPLETED, ERROR,
                      CONNECTING, KIND_MEDIA)
 
+import re
+
 MAIN_QUEUE = "Main queue"
+EXPIRED_HINT = "the link has probably expired - right-click the download and choose Refresh address"
+
+
+def friendly_error(msg):
+    """Shorten yt-dlp's long '[generic] <url>: ...' errors and explain refused / expired links."""
+    m = re.search(r"(HTTP Error \d+[^\n]*)", msg)
+    if m:
+        msg = m.group(1)
+    if re.search(r"\b(401|403|404|410)\b|expired|Forbidden|Gone", msg) and "Refresh address" not in msg:
+        msg = f"{msg.strip().rstrip('.')} - {EXPIRED_HINT}"
+    return msg
 SYNC_QUEUE = "Synchronization queue"
 
 
@@ -287,7 +300,7 @@ class DownloadManager(QtCore.QObject):
             it.status = QUEUED if getattr(eng, "requeue", False) else PAUSED
         else:
             it.status = ERROR
-            it.error = error or "Unknown error"
+            it.error = friendly_error(error or "Unknown error")
         if it.id in self.items:
             self.item_updated.emit(it.id)
             self.item_finished.emit(it.id, it.status)
