@@ -19,7 +19,7 @@
 
 ## نصب
 ```bash
-sudo apt install ./tondar_1.0.0_all.deb
+sudo apt install ./tondar_1.0.1_all.deb
 ```
 بعد از نصب، از منوی برنامه‌ها «Tondar Download Manager» را باز کنید.
 
@@ -28,8 +28,7 @@ sudo apt install ./tondar_1.0.0_all.deb
 1. به `chrome://extensions` بروید و **Developer mode** را روشن کنید.
 2. **Load unpacked** را بزنید و پوشه‌ی `/usr/share/tondar/extension/chrome` را انتخاب کنید.
 
-**Firefox:** به `about:debugging#/runtime/this-firefox` بروید، **Load Temporary Add-on** را بزنید و فایل `/usr/share/tondar/extension/firefox/manifest.json` را انتخاب کنید. بعد روی آیکن افزونه بزنید و دکمه‌ی «Allow access to all websites» را بزنید.
-(افزونه‌ی موقت فایرفاکس با بستن مرورگر حذف می‌شود. برای نصب دائمی باید فایل `tondar-firefox.xpi` در addons.mozilla.org به‌صورت unlisted امضا شود.)
+**Firefox:** افزونه‌ی امضاشده موقع نصب بسته از طریق `/etc/firefox/policies/policies.json` خودکار نصب می‌شود. فقط یک بار Firefox را ببندید و باز کنید، بعد روی آیکن Tondar بزنید و «Allow access to all websites» را بزنید.
 
 ### یوتیوب
 اولین باری که ویدیو دانلود می‌کنید، برنامه آخرین نسخه‌ی yt-dlp و Deno را (که یوتیوب الان لازم دارد) در `~/.local/share/tondar/bin` دانلود می‌کند و هر هفته به‌روزش می‌کند.
