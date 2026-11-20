@@ -13,6 +13,7 @@ CONNECTING = "Connecting"
 
 KIND_HTTP = "http"
 KIND_MEDIA = "media"         # handled by yt-dlp
+KIND_TELEGRAM = "telegram"   # handled by tdl (optional Telegram support)
 
 FIELDS = dict(
     id="", url="", final_url="", filename="", save_dir="", category="General",

@@ -258,6 +258,8 @@
 
   function place() {
     if (!enabled) return hide();
+    // Telegram Web streams videos over its own protocol: there is no address to give Tondar
+    if (/(^|\.)web\.telegram\.org$/i.test(location.hostname)) return hide();
     if (location.href !== lastUrl) {
       lastUrl = location.href;
       sniffed = [];

@@ -11,7 +11,7 @@ from .config import STATE_FILE, DATA_DIR
 from .engine import HttpDownloader, SpeedLimiter, probe, unique_path, PART_SUFFIX, replace_with_retry
 from .media import MediaDownloader, probe_media
 from .models import (DownloadItem, QUEUED, WAITING, DOWNLOADING, PAUSED, COMPLETED, ERROR,
-                     CONNECTING, KIND_MEDIA)
+                     CONNECTING, KIND_MEDIA, KIND_TELEGRAM)
 
 import re
 
@@ -141,7 +141,10 @@ class DownloadManager(QtCore.QObject):
         it = self.items.get(item_id)
         if not it or item_id in self.engines or it.status == COMPLETED:
             return
-        cls = MediaDownloader if it.kind == KIND_MEDIA else HttpDownloader
+        if it.kind == KIND_TELEGRAM:
+            from .telegram import TelegramDownloader as cls
+        else:
+            cls = MediaDownloader if it.kind == KIND_MEDIA else HttpDownloader
         eng = cls(it, self.settings, self.limiter, self._done_from_thread)
         self.engines[item_id] = eng
         it.status = CONNECTING
@@ -184,7 +187,7 @@ class DownloadManager(QtCore.QObject):
         it = self.items.pop(item_id, None)
         if it:
             if delete_file:
-                for p in (it.path, it.path + PART_SUFFIX):
+                for p in (it.path, it.path + PART_SUFFIX, it.path + ".tmp"):
                     try:
                         os.remove(p)
                     except OSError:

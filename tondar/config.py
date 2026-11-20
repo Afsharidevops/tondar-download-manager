@@ -44,6 +44,9 @@ DEFAULT_SETTINGS = {
                    "(KHTML, like Gecko) Chrome/131.0 Safari/537.36"),
     "proxy": "",                      # e.g. http://127.0.0.1:8080 or socks5://127.0.0.1:1080
     "use_system_proxy": True,
+    "telegram_proxy": "",             # optional Telegram support (tdl): socks5://host:port
+    "telegram_threads": 4,
+    "telegram_last": 100,
     "download_dir": "",               # empty -> XDG download dir + /Tondar
     "use_category_folders": True,
     "show_file_info_dialog": True,    # "Download File Info" before start

@@ -282,6 +282,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.a_refresh = A("Refresh address…", None, self.refresh_address)
         self.a_exit = A("Exit", None, self.quit_app, "Ctrl+Q")
         self.a_tools = A("Update video engine (yt-dlp)", None, lambda: run_tools_update(self, self.s))
+        self.a_telegram = A("Telegram…", None, self.telegram, None,
+                            "Optional: download videos and files from Telegram channels and groups")
         self.a_import = A("Import list...", None, self.import_list, "Ctrl+I")
         self.a_export = A("Export list...", None, lambda: self.export_list(False), "Ctrl+E")
         self.a_export_sel = A("Export selected...", None, lambda: self.export_list(True))
@@ -291,6 +293,7 @@ class MainWindow(QtWidgets.QMainWindow):
         t = mb.addMenu("&Tasks")
         t.addAction(self.a_add)
         t.addAction(self._act("Add batch download from clipboard", None, self.batch_from_clipboard))
+        t.addAction(self.a_telegram)
         t.addSeparator()
         t.addAction(self.a_import)
         t.addAction(self.a_export)
@@ -484,8 +487,19 @@ class MainWindow(QtWidgets.QMainWindow):
             url, headers = dlg.value()
             self.new_download({"url": url, "headers": headers})
 
+    def telegram(self, chat=""):
+        from .telegram_dialog import TelegramDialog
+        self.show_window()
+        dlg = TelegramDialog(self.m, self.s, self, chat if isinstance(chat, str) else "")
+        exec_(dlg)
+
     def new_download(self, req):
         from ..media import is_collection_url
+        from .. import telegram as tg
+        if tg.LINK_RE.match(req.get("url", "")) and tg.tdl_path() and tg.has_session():
+            # Telegram support was set up by the user: t.me links go to the Telegram window
+            self.telegram(req["url"])
+            return
         if is_collection_url(req.get("url", "")):
             # a playlist / channel page: list its videos instead of probing one file
             self.on_browser_links([{"url": req["url"], "referer": req.get("referer", ""), "page": True}],

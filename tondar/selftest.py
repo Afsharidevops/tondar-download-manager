@@ -116,6 +116,11 @@ def run(report_path):
         theme.apply(app, "dark")
         w.apply_theme("dark")
         app.processEvents()
+        from .ui.telegram_dialog import TelegramDialog
+        tgd = TelegramDialog(m, s, w)
+        tgd.show()
+        app.processEvents()
+        tgd.close()
         o.close()
         m.shutdown()
         QtCore.QTimer.singleShot(0, app.quit)
@@ -137,6 +142,18 @@ def run(report_path):
             info["ffmpeg_version"] = out.stdout.splitlines()[0] if out.stdout else ""
         return info
     check("tools", tools)
+
+    # 4. optional Telegram support: the tdl build for this OS downloads and runs (CI only - needs internet)
+    if os.environ.get("TONDAR_SELFTEST_TDL") == "1":
+        def telegram():
+            from . import telegram as tg
+            from .config import Settings
+            tg.install_tdl(Settings(), log=lambda *_: None)
+            v = tg.tdl_version()
+            if not v:
+                raise RuntimeError("tdl does not run")
+            return {"tdl": tg.tdl_path(), "version": v}
+        check("telegram", telegram)
 
     def paths():
         from .config import CONFIG_DIR, DATA_DIR, Settings
