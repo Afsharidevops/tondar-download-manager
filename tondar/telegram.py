@@ -248,6 +248,8 @@ def parse_chat(text):
     """'@name', 'name', 'https://t.me/name', 'https://t.me/name/123', 'https://t.me/c/123/45'
     -> (chat, message id or None). Raises ValueError."""
     t = (text or "").strip()
+    if t.lower() in ("", "me", "self", "saved", "saved messages", "پیام‌های ذخیره‌شده", "پیام های ذخیره شده"):
+        return "me", None
     m = LINK_RE.match(t)
     if m:
         parts = [p for p in m.group(1).split("?")[0].split("/") if p]
@@ -266,6 +268,8 @@ def parse_chat(text):
 
 
 def message_link(chat, chat_id, msg_id):
+    if chat == "me":
+        return f"tdl://saved/{msg_id}"          # Saved Messages have no t.me link
     if chat and not chat.lstrip("-").isdigit():
         return f"https://t.me/{chat}/{msg_id}"
     cid = str(chat_id or chat)
@@ -360,7 +364,9 @@ def list_files(settings, chat_text, last=100, cancel=None):
     fd, out_json = tempfile.mkstemp(prefix="tondar-tg-", suffix=".json")
     os.close(fd)
     try:
-        args = base_args(settings) + ["chat", "export", "-c", chat, "-o", out_json, "--with-content", "--raw"]
+        args = base_args(settings) + ["chat", "export", "-o", out_json, "--with-content", "--raw"]
+        if chat != "me":                         # no -c: Saved Messages
+            args += ["-c", chat]
         if msg:
             args += ["-T", "id", "-i", f"{msg},{msg}"]
         else:
@@ -389,7 +395,7 @@ def list_files(settings, chat_text, last=100, cancel=None):
         file_name = m.get("file") or ""
         caption = m.get("text") or ""
         entries.append({
-            "id": m["id"], "link": message_link(chat, chat_id, m["id"]),
+            "id": m["id"], "chat_id": chat_id, "link": message_link(chat, chat_id, m["id"]),
             "name": suggest_name(file_name, caption, f["mime"], m["id"]),
             "file": file_name, "size": f["size"], "mime": f["mime"],
             "kind": kind_of(file_name, f["mime"]), "duration": f["duration"], "w": f["w"], "h": f["h"],
@@ -461,8 +467,17 @@ class TelegramDownloader:
             final = os.path.join(it.save_dir, it.filename)
             tmp = final + ".tmp"
             threads = max(1, min(8, int(self.settings.get("telegram_threads") or 4)))
+            src = ["-u", it.url]
+            h = it.headers or {}
+            if h.get("tg_chat") and h.get("tg_msg"):
+                # an export-style list works for every chat, also Saved Messages and private chats
+                fd, self.src_json = tempfile.mkstemp(prefix="tondar-tg-", suffix=".json")
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump({"id": int(h["tg_chat"]), "messages": [
+                        {"id": int(h["tg_msg"]), "type": "message", "file": it.filename}]}, f)
+                src = ["-f", self.src_json]
             args = base_args(self.settings) + [
-                "dl", "-u", it.url, "-d", it.save_dir, "--template", it.filename,
+                "dl", *src, "-d", it.save_dir, "--template", it.filename,
                 "--restart", "-l", "1", "-t", str(threads)]
             self.proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                          stdin=subprocess.DEVNULL, text=True, encoding="utf-8",
@@ -497,5 +512,10 @@ class TelegramDownloader:
         except Exception as e:  # noqa: BLE001
             self.on_done(self, "error", str(e))
         finally:
+            if getattr(self, "src_json", None):
+                try:
+                    os.remove(self.src_json)
+                except OSError:
+                    pass
             if got_lock:
                 TDL_LOCK.release()

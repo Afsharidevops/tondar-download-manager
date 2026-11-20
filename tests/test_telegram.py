@@ -13,7 +13,9 @@ assert P("t.me/s/fillmayesh") == ("fillmayesh", None)
 assert P("https://t.me/fillmayesh/123") == ("fillmayesh", 123)
 assert P("https://t.me/c/1234567890/45") == ("1234567890", 45)
 assert P("https://t.me/fillmayesh/123?single") == ("fillmayesh", 123)
-for bad in ("https://t.me/+AbCdEf", "hello world", ""):
+assert P("") == ("me", None) and P("Saved Messages") == ("me", None)
+assert tg.message_link("me", 777, 5) == "tdl://saved/5"
+for bad in ("https://t.me/+AbCdEf", "hello world"):
     try:
         P(bad); raise SystemExit(f"accepted {bad!r}")
     except ValueError:
@@ -47,6 +49,8 @@ assert e[11]["size"] == 300000 and e[11]["kind"] == "video" and e[11]["duration"
 assert e[11]["link"] == "https://t.me/fillmayesh/11" and e[11]["name"].endswith("(11).mp4")
 assert e[13]["kind"] == "image" and e[13]["size"] == 54321
 assert e[14]["kind"] == "audio"
+chat, saved = tg.list_files(s, "", 50)
+assert chat == "me" and saved[0]["link"] == "tdl://saved/11" and saved[0]["chat_id"] == 777
 chat, one = tg.list_files(s, "https://t.me/fillmayesh/12", 50)
 assert [x["id"] for x in one] == [12]
 print("listing ok:", [(x["name"], x["size"], x["kind"]) for x in entries])
@@ -58,8 +62,9 @@ from tondar.models import KIND_TELEGRAM, COMPLETED, ERROR
 m = DownloadManager(s)
 out = tempfile.mkdtemp()
 items = []
-for x in (e[11], e[12], dict(e[12], link="https://t.me/fillmayesh/99", name="missing.mp4")):
-    it = m.new_item(x["link"], x["name"], out, "Video", kind=KIND_TELEGRAM, size=x["size"])
+for x, h in ((e[11], {}), (dict(saved[1], name="from saved.mp4"), {"tg_chat": "777", "tg_msg": "12"}),
+             (dict(e[12], link="https://t.me/fillmayesh/99", name="missing.mp4"), {})):
+    it = m.new_item(x["link"], x["name"], out, "Video", kind=KIND_TELEGRAM, size=x["size"], headers=h)
     m.add(it, start=False, queue=MAIN_QUEUE); items.append(it)
 seen_progress = []
 m.start_queue()

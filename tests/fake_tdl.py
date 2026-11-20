@@ -28,10 +28,14 @@ if "export" in a:
             doc(14, "song.mp3", 5000, "audio/mpeg", 200)]
     if opt("-T") == "id":
         lo = int(opt("-i").split(",")[0]); msgs = [m for m in msgs if m["id"] == lo]
-    json.dump({"id": 1234567890, "messages": msgs}, open(out, "w"), ensure_ascii=False)
+    json.dump({"id": 777 if "-c" not in a else 1234567890, "messages": msgs}, open(out, "w"), ensure_ascii=False)
     print("done"); sys.exit(0)
 if "dl" in a:
     d, name, url = opt("-d"), opt("--template"), opt("-u")
+    if url is None:                                   # -f export list
+        j = json.load(open(opt("-f"), encoding="utf-8"))
+        assert j["id"] and j["messages"][0]["type"] == "message"
+        url = f"tg/{j['id']}/{j['messages'][0]['id']}"
     size = 300000 if url.endswith("/11") else 200000
     if url.endswith("/99"):
         print("\x1b[31mError: resolve message: message not found\x1b[0m"); sys.exit(1)

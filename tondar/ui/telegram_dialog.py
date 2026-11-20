@@ -83,7 +83,6 @@ class TelegramDialog(QtWidgets.QDialog):
             "It appears in Telegram under Settings › Devices, where you can also end it.")
         note.setWordWrap(True)
         note.setOpenExternalLinks(True)
-        note.setStyleSheet("color: palette(mid);")
         al.addWidget(note)
         lay.addWidget(acc)
 
@@ -91,9 +90,13 @@ class TelegramDialog(QtWidgets.QDialog):
         frow = QtWidgets.QHBoxLayout()
         frow.addWidget(QtWidgets.QLabel("Channel / group:"))
         self.chat = QtWidgets.QLineEdit(chat)
-        self.chat.setPlaceholderText("@channel, https://t.me/channel or a message link https://t.me/channel/123")
+        self.chat.setPlaceholderText("@channel, t.me link or message link")
         self.chat.returnPressed.connect(self.list_files)
         frow.addWidget(self.chat, 1)
+        saved = QtWidgets.QPushButton("Saved Messages")
+        saved.setToolTip("List the files in your own Saved Messages")
+        saved.clicked.connect(lambda: (self.chat.setText("Saved Messages"), self.list_files()))
+        frow.addWidget(saved)
         frow.addWidget(QtWidgets.QLabel("last"))
         self.last = QtWidgets.QSpinBox()
         self.last.setRange(1, 10000)
@@ -135,8 +138,7 @@ class TelegramDialog(QtWidgets.QDialog):
         srow.addWidget(QtWidgets.QLabel("Save to:"))
         self.folder = QtWidgets.QLineEdit(str(self.s.dir_for_category("Video")))
         srow.addWidget(self.folder, 1)
-        b = QtWidgets.QPushButton("…")
-        b.setFixedWidth(34)
+        b = QtWidgets.QPushButton("Browse…")
         b.clicked.connect(self._browse)
         srow.addWidget(b)
         self.subfolder = QtWidgets.QCheckBox("Folder per channel")
@@ -408,7 +410,8 @@ class TelegramDialog(QtWidgets.QDialog):
         if not folder:
             return self._error("Choose a folder.")
         if self.subfolder.isChecked():
-            folder = os.path.join(folder, tg.safe_name(getattr(self, "chat_name", "") or "Telegram"))
+            name = getattr(self, "chat_name", "") or "Telegram"
+            folder = os.path.join(folder, tg.safe_name("Saved Messages" if name == "me" else name))
         added = 0
         for row in rows:
             e = row.data(0, Qt.ItemDataRole.UserRole)
@@ -417,7 +420,8 @@ class TelegramDialog(QtWidgets.QDialog):
                 name += os.path.splitext(e["name"])[1]
             cat = "Music" if e["kind"] == "audio" else self.s.category_for(name)
             it = self.m.new_item(e["link"], name, folder, cat, kind=KIND_TELEGRAM, size=e["size"],
-                                 page_url=e["link"], description=" ".join((e["caption"] or "").split())[:300])
+                                 page_url=e["link"], description=" ".join((e["caption"] or "").split())[:300],
+                                 headers={"tg_chat": str(e.get("chat_id") or ""), "tg_msg": str(e["id"])})
             self.m.add(it, start=False, queue=MAIN_QUEUE)
             added += 1
         if self.start_now.isChecked():
