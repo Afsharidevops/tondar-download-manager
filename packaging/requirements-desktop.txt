@@ -4,3 +4,8 @@ PyQt6-Qt6>=6.8,<6.9
 pyinstaller>=6.10
 pillow
 imageio-ffmpeg
+# TLS: trust the operating system's certificates (fixes CERTIFICATE_VERIFY_FAILED on Windows/macOS)
+truststore>=0.9
+certifi
+# SOCKS proxies (Options > Connection)
+PySocks

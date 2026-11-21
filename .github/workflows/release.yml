@@ -43,6 +43,7 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: |
           python3 tests/test_telegram.py
+          python3 tests/test_yt_titles.py
           TONDAR_HOME=$(mktemp -d) python3 -c "from tondar import telegram as t; from tondar.config import Settings; t.install_tdl(Settings()); print('tdl', t.tdl_version()); assert t.tdl_version()"
       - name: Build .deb
         env:

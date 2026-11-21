@@ -73,8 +73,35 @@ class SpeedLimiter:
 # --------------------------------------------------------------------------
 # HTTP helpers
 # --------------------------------------------------------------------------
+_SSL_CTX = None
+
+
+def ssl_context():
+    """TLS context that trusts what the operating system trusts.
+
+    The Python inside the Windows/macOS builds has its own OpenSSL, which only sees the root
+    certificates Windows has already downloaded (Windows fetches missing roots on demand, OpenSSL
+    can't) and none at all on macOS -> CERTIFICATE_VERIFY_FAILED. truststore asks the OS itself;
+    certifi's bundle is the fallback."""
+    global _SSL_CTX
+    if _SSL_CTX is None:
+        ctx = None
+        try:
+            import truststore
+            ctx = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        except Exception:  # noqa: BLE001 - not installed / unsupported
+            ctx = ssl.create_default_context()
+            try:
+                import certifi
+                ctx.load_verify_locations(certifi.where())
+            except Exception:  # noqa: BLE001
+                pass
+        _SSL_CTX = ctx
+    return _SSL_CTX
+
+
 def build_opener(proxy: str = "", use_system_proxy: bool = True):
-    handlers = []
+    handlers = [urllib.request.HTTPSHandler(context=ssl_context())]
     if proxy:
         if proxy.startswith("socks"):
             try:
@@ -82,8 +109,9 @@ def build_opener(proxy: str = "", use_system_proxy: bool = True):
                 from sockshandler import SocksiPyHandler
                 u = urllib.parse.urlparse(proxy)
                 ptype = socks.SOCKS5 if "5" in u.scheme else socks.SOCKS4
-                handlers.append(SocksiPyHandler(ptype, u.hostname, u.port or 1080, rdns=True,
-                                                username=u.username, password=u.password))
+                # replaces the HTTPS handler (two handlers for https would bypass the proxy)
+                handlers = [SocksiPyHandler(ptype, u.hostname, u.port or 1080, rdns=True,
+                                            username=u.username, password=u.password)]
             except ImportError:
                 raise FatalError("SOCKS proxy needs the python3-socks package "
                                  "(sudo apt install python3-socks)")

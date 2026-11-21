@@ -725,6 +725,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _match_unfinished(self, data, media):
         """An unfinished download that this new browser request probably continues."""
         from ..media import media_filename
+        from .. import media as M
         import os as _os
         cands = [it for it in self.m.items.values()
                  if it.status != COMPLETED and it.id not in self.m.engines
@@ -833,6 +834,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         o = next((o for o in info["options"] if o["id"] == data.get("format")), info["options"][0])
         from ..media import media_filename
+        from .. import media as M
         cat = "Music" if o["type"] != "video" else "Video"
         it = self.m.new_item(url, media_filename(info["title"], o["ext"]), category=cat, kind=KIND_MEDIA,
                              media_format=o["id"], media_title=info["title"], size=o.get("size") or -1,
@@ -852,6 +854,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         from urllib.parse import unquote
         from ..media import media_filename
+        from .. import media as M
         from ..engine import sanitize_filename
         added = 0
         preset = dlg.preset()
@@ -872,12 +875,13 @@ class MainWindow(QtWidgets.QMainWindow):
                         continue
                     seen.add(v["url"])
                     folder = self.s.dir_for_category(cat)
-                    name = v["title"]
+                    name = v["title"] or f"YouTube {M.yt_video_id(v['url']) or 'video'}"
                     if v.get("list_title"):
                         folder = folder / sanitize_filename(v["list_title"])[:100]
                         name = f"{v['list_index']:02d} - {name}"
                     it = self.m.new_item(v["url"], media_filename(name, ext), str(folder), cat, kind=KIND_MEDIA,
                                          media_format=fmt, media_title=v["title"], page_url=v["url"],
+                                         auto_name=not v["title"],
                                          size=(l.get("size") or -1) if l.get("yt") == "video" else -1)
                     self.m.add(it, start=False, queue=MAIN_QUEUE)
                     added += 1

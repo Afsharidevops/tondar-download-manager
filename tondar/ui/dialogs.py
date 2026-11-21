@@ -1310,9 +1310,21 @@ class LinksDialog(QtWidgets.QDialog):
     # ------------------------------------------------------------ YouTube
     YT_SIZE_LIMIT = 40          # look up sizes of at most this many videos (each costs a yt-dlp run)
 
+    @staticmethod
+    def _yt_title(text):
+        """Anchor text of a YouTube link -> a usable title ('' if there is none).
+        Thumbnail links carry only the duration ('18:35'), some carry the channel and views too."""
+        t = re.sub(r"^(?:Now playing\s*)?(?:\d{1,2}:)?\d{1,2}:\d{2}\s*", "", text or "").strip()
+        t = re.sub(r"^(?:Now playing|SHORTS|LIVE)\s*", "", t, flags=re.I).strip()
+        return "" if t.lower() in ("watch", "shorts", "youtube", "") or len(t) < 2 else t
+
+    @staticmethod
+    def _title_score(t):
+        return (bool(t), not re.search(r"•|\bviews?\b|\bago\b|\bwatching\b", t), len(t) if len(t) < 120 else 0)
+
     def _prepare(self, links):
         from .. import media as M
-        out, seen_v, seen_l = [], set(), set()
+        out, seen_v, seen_l = [], {}, set()
         for l in links:
             u = l.get("url", "")
             if not re.match(r"^(https?|ftp)://", u, re.I):
@@ -1328,10 +1340,15 @@ class LinksDialog(QtWidgets.QDialog):
                 continue
             if kind == "video":
                 vu = M.yt_video_url(u)
-                if vu in seen_v:
+                title = self._yt_title(text)
+                if vu in seen_v:          # the same video again (thumbnail + title link): keep the better title
+                    row = seen_v[vu]
+                    if self._title_score(title) > self._title_score(row["title"]):
+                        row["title"] = row["text"] = title
                     continue
-                seen_v.add(vu)
-                out.append(dict(l, url=vu, yt="video", title=text, _page=False))
+                row = dict(l, url=vu, yt="video", title=title, text=title, _page=False)
+                seen_v[vu] = row
+                out.append(row)
             elif kind == "playlist":
                 key = M.yt_list_id(u)
                 if key in seen_l:
@@ -1349,7 +1366,8 @@ class LinksDialog(QtWidgets.QDialog):
 
     def _make_row(self, l, i):
         if l.get("yt") == "video":
-            name, typ, icon = l.get("title") or self._name_from_url(l["url"]), "YouTube video", "Video"
+            from .. import media as M
+            name, typ, icon = l.get("title") or f"YouTube {M.yt_video_id(l['url']) or 'video'}", "YouTube video", "Video"
         elif l.get("yt") == "playlist":
             name, typ, icon = l.get("title") or "Playlist", "Playlist", "queue"
         elif l.get("yt") == "page":
@@ -1512,7 +1530,7 @@ class LinksDialog(QtWidgets.QDialog):
         """Videos a checked YouTube row stands for: itself, or every video of a playlist."""
         from .. import media as M
         if l.get("yt") == "video":
-            return [dict(url=l["url"], title=l.get("title") or l["url"], list_title=l.get("list_title"),
+            return [dict(url=l["url"], title=l.get("title") or "", list_title=l.get("list_title"),
                          list_index=l.get("list_index"))]
         entries = l.get("_entries")
         if entries is None:

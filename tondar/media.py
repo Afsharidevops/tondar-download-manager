@@ -172,8 +172,9 @@ def ensure_tools(settings, log=print):
             install_tools(settings, log=log)
         except Exception as e:  # noqa: BLE001
             if not ytdlp_command():
-                raise MediaError(f"Could not download yt-dlp ({e}). Set a proxy in Options "
-                                 "or install it: sudo apt install yt-dlp")
+                hint = "" if (osutil.IS_WIN or osutil.IS_MAC) else " or install it: sudo apt install yt-dlp"
+                raise MediaError(f"Could not download yt-dlp ({e}). Check your internet connection, "
+                                 f"set a proxy in Options{hint}, then try again.")
 
 
 def auto_update(settings, max_age_days=7):
@@ -456,11 +457,39 @@ class MediaDownloader:
     def active_connections(self):
         return self.settings["max_connections"] if self.proc and self.proc.poll() is None else 0
 
+    def _name_from_title(self):
+        """The link had no usable title (e.g. a YouTube thumbnail): ask yt-dlp before downloading."""
+        it = self.item
+        jar = write_cookie_jar(it.cookie_jar) if it.cookie_jar else None
+        try:
+            args = _base_args(self.settings) + ["--no-playlist", "--skip-download", "--print", "TDTITLE %(title)s"]
+            if jar:
+                args += ["--cookies", jar]
+            args += _header_args(it.referer, "" if jar else it.cookies, it.user_agent, it.headers)
+            args.append(it.page_url or it.url)
+            r = subprocess.run(args, capture_output=True, text=True, timeout=180, env=_env(),
+                               encoding="utf-8", errors="replace", **osutil.subprocess_kwargs())
+            title = next((l[8:].strip() for l in r.stdout.splitlines() if l.startswith("TDTITLE ")), "")
+            if title and title != "NA":
+                from .engine import unique_path
+                prefix = re.match(r"^\d{2,3} - ", it.filename)       # playlist number
+                ext = os.path.splitext(it.filename)[1].lstrip(".") or "mp4"
+                name = media_filename((prefix.group(0) if prefix else "") + title, ext)
+                it.filename = os.path.basename(unique_path(os.path.join(it.save_dir, name)))
+                it.media_title = title
+        except Exception:  # noqa: BLE001 - keep the placeholder name
+            pass
+        finally:
+            _remove(jar)
+            it.auto_name = False
+
     def _run(self):
         it = self.item
         try:
             ensure_tools(self.settings, log=lambda *_: None)
             os.makedirs(it.save_dir, exist_ok=True)
+            if it.auto_name and not it.downloaded:
+                self._name_from_title()
             base = os.path.splitext(it.filename)[0]
             ext = os.path.splitext(it.filename)[1].lstrip(".") or "mp4"
             args = _base_args(self.settings) + [

@@ -93,7 +93,8 @@ def pyinstaller(icon, ext_dir, ffmpeg_path):
            "--add-binary", f"{ffmpeg_path}{sep}bin"]
     for mod in ("tondar.app", "tondar.ui.main_window", "tondar.ui.dialogs", "tondar.ui.theme",
                 "tondar.selftest", "tondar.server", "tondar.manager", "tondar.media", "tondar.listio",
-                "tondar.telegram", "tondar.ui.telegram_dialog"):
+                "tondar.telegram", "tondar.ui.telegram_dialog",
+                "truststore", "certifi", "socks", "sockshandler"):
         cmd += ["--hidden-import", mod]
     for mod in ("PyQt6.QtWebEngineCore", "PyQt6.QtQml", "PyQt6.QtQuick", "PyQt6.QtMultimedia",
                 "PyQt6.QtBluetooth", "PyQt6.QtPdf", "PyQt6.Qt3DCore", "tkinter", "PyQt5"):

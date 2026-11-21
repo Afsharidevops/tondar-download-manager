@@ -143,7 +143,22 @@ def run(report_path):
         return info
     check("tools", tools)
 
-    # 4. optional Telegram support: the tdl build for this OS downloads and runs (CI only - needs internet)
+    # 4. TLS: the frozen builds must use the OS certificate store (truststore)
+    def tls():
+        from .engine import ssl_context, build_opener
+        ctx = ssl_context()
+        info = {"context": type(ctx).__module__ + "." + type(ctx).__name__}
+        if osutil.FROZEN and "truststore" not in info["context"]:
+            raise RuntimeError("truststore is not bundled: " + info["context"])
+        if os.environ.get("TONDAR_SELFTEST_TDL") == "1":
+            o = build_opener()
+            o.addheaders = [("User-Agent", "tondar-dm")]
+            with o.open("https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS", timeout=60) as r:
+                info["github"] = r.status
+        return info
+    check("tls", tls)
+
+    # 5. optional Telegram support: the tdl build for this OS downloads and runs (CI only - needs internet)
     if os.environ.get("TONDAR_SELFTEST_TDL") == "1":
         def telegram():
             from . import telegram as tg
