@@ -1157,6 +1157,10 @@ class LinksDialog(QtWidgets.QDialog):
         self.show_pages = QtWidgets.QCheckBox("Show web pages")
         top.addWidget(self.show_pages)
         lay.addLayout(top)
+        from .widgets import TypeFilter
+        self.types = TypeFilter(self)
+        self.types.changed.connect(self._apply_filter)
+        lay.addWidget(self.types)
 
         refrow = QtWidgets.QHBoxLayout()
         refrow.addWidget(QtWidgets.QLabel("Referer:"))
@@ -1646,10 +1650,23 @@ class LinksDialog(QtWidgets.QDialog):
             return "Music"
         return "File"
 
+    def _ltype(self, l):
+        """File type of a row for the type filter (None for web pages)."""
+        from ..config import file_type
+        if l.get("yt") == "playlist":
+            return "playlist"
+        if l.get("_page") or l.get("yt") == "page":
+            return None
+        if l.get("yt") == "video" or l.get("kind") == KIND_MEDIA or l.get("_stream"):
+            return "video"
+        ctype = ((l.get("_info") or {}).get("content_type") or "")
+        return file_type(l.get("filename") or self._name_from_url(l["url"]), ctype, self.s["categories"])
+
     def _apply_filter_one(self, l):
         it = l["_item"]
         q = self.filter.text().strip().lower()
-        hide = (l.get("_page") and not self.show_pages.isChecked()) or \
+        t = self._ltype(l)
+        hide = (l.get("_page") and not self.show_pages.isChecked()) or (t and not self.types.allowed(t)) or \
             (q and q not in it.text(0).lower() and q not in l["url"].lower())
         it.setHidden(bool(hide))
 
@@ -1680,6 +1697,12 @@ class LinksDialog(QtWidgets.QDialog):
         return [l for l in self.links if l["_item"].checkState(0) == Qt.CheckState.Checked]
 
     def _update_status(self):
+        counts = {}
+        for l in self.links:
+            t = self._ltype(l)
+            if t:
+                counts[t] = counts.get(t, 0) + 1
+        self.types.set_counts(counts)
         files = [l for l in self.links if (l.get("_page") is False and l.get("yt") != "playlist")
                  or l.get("kind") == KIND_MEDIA]
         pages = sum(1 for l in self.links if l.get("_page"))

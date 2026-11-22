@@ -9,8 +9,13 @@ from ..models import human_size, KIND_TELEGRAM
 from ..manager import MAIN_QUEUE
 from .. import telegram as tg
 from .. import osutil
+from .widgets import TypeFilter
 
-FILTERS = [("Videos", ("video",)), ("Videos and audio", ("video", "audio")), ("All files", None)]
+TYPE_NAMES = {"video": "Video", "audio": "Audio", "image": "Image", "document": "Document",
+              "compressed": "Archive", "program": "Program", "other": "File"}
+CATEGORY_OF = {"video": "Video", "audio": "Music", "document": "Documents", "compressed": "Compressed",
+               "program": "Programs"}
+
 
 
 class _Bridge(QtCore.QObject):
@@ -109,17 +114,14 @@ class TelegramDialog(QtWidgets.QDialog):
         frow.addWidget(self.b_list)
         lay.addLayout(frow)
 
-        grow = QtWidgets.QHBoxLayout()
-        self.kind = QtWidgets.QComboBox()
-        for label, _ in FILTERS:
-            self.kind.addItem(label)
-        self.kind.currentIndexChanged.connect(self._fill)
+        self.types = TypeFilter(self)
+        self.types.changed.connect(self._apply_filter)
+        lay.addWidget(self.types)
         self.filter = QtWidgets.QLineEdit()
         self.filter.setPlaceholderText("Filter by name or caption…")
+        self.filter.setClearButtonEnabled(True)
         self.filter.textChanged.connect(self._apply_filter)
-        grow.addWidget(self.kind)
-        grow.addWidget(self.filter, 1)
-        lay.addLayout(grow)
+        lay.addWidget(self.filter)
 
         self.tree = QtWidgets.QTreeWidget()
         self.tree.setHeaderLabels(self.COLS)
@@ -342,14 +344,14 @@ class TelegramDialog(QtWidgets.QDialog):
         self._fill()
 
     def _fill(self):
-        kinds = FILTERS[self.kind.currentIndex()][1]
         self.tree.blockSignals(True)
         self.tree.setSortingEnabled(False)
         self.tree.clear()
+        counts = {}
         for e in self.entries:
-            if kinds and e["kind"] not in kinds:
-                continue
-            it = _SortItem([e["name"], human_size(e["size"]) if e["size"] > 0 else "?", e["kind"],
+            counts[e["kind"]] = counts.get(e["kind"], 0) + 1
+            it = _SortItem([e["name"], human_size(e["size"]) if e["size"] > 0 else "?",
+                            TYPE_NAMES.get(e["kind"], e["kind"]),
                             _hms(e["duration"]),
                             time.strftime("%Y-%m-%d", time.localtime(e["date"])) if e["date"] else "",
                             " ".join((e["caption"] or "").split())[:200]])
@@ -359,14 +361,15 @@ class TelegramDialog(QtWidgets.QDialog):
             it.setData(1, Qt.ItemDataRole.UserRole, e["size"])
             it.setData(3, Qt.ItemDataRole.UserRole, e["duration"])
             it.setData(4, Qt.ItemDataRole.UserRole, e["date"])
+            it.setData(2, Qt.ItemDataRole.UserRole, e["kind"])
             it.setToolTip(0, e["link"])
             it.setToolTip(5, e["caption"])
             self.tree.addTopLevelItem(it)
         self.tree.setSortingEnabled(True)
         self.tree.sortItems(4, Qt.SortOrder.AscendingOrder)
         self.tree.blockSignals(False)
+        self.types.set_counts(counts)
         self._apply_filter()
-        self._update_total()
 
     def _rows(self):
         return [self.tree.topLevelItem(i) for i in range(self.tree.topLevelItemCount())]
@@ -374,7 +377,9 @@ class TelegramDialog(QtWidgets.QDialog):
     def _apply_filter(self):
         f = self.filter.text().strip().lower()
         for it in self._rows():
-            it.setHidden(bool(f) and f not in (it.text(0) + " " + it.text(5)).lower())
+            it.setHidden(not self.types.allowed(it.data(2, Qt.ItemDataRole.UserRole)) or
+                         (bool(f) and f not in (it.text(0) + " " + it.text(5)).lower()))
+        self._update_total()
 
     def _check_all(self, on):
         self.tree.blockSignals(True)
@@ -409,17 +414,19 @@ class TelegramDialog(QtWidgets.QDialog):
         folder = self.folder.text().strip()
         if not folder:
             return self._error("Choose a folder.")
-        if self.subfolder.isChecked():
-            name = getattr(self, "chat_name", "") or "Telegram"
-            folder = os.path.join(folder, tg.safe_name("Saved Messages" if name == "me" else name))
+        # left at the default (the Video folder): every type goes to its own category folder
+        by_category = os.path.normpath(folder) == os.path.normpath(str(self.s.dir_for_category("Video")))
+        chat = getattr(self, "chat_name", "") or "Telegram"
+        sub = tg.safe_name("Saved Messages" if chat == "me" else chat) if self.subfolder.isChecked() else ""
         added = 0
         for row in rows:
             e = row.data(0, Qt.ItemDataRole.UserRole)
             name = tg.safe_name(row.text(0).strip()) or e["name"]
             if not os.path.splitext(name)[1] and os.path.splitext(e["name"])[1]:
                 name += os.path.splitext(e["name"])[1]
-            cat = "Music" if e["kind"] == "audio" else self.s.category_for(name)
-            it = self.m.new_item(e["link"], name, folder, cat, kind=KIND_TELEGRAM, size=e["size"],
+            cat = CATEGORY_OF.get(e["kind"]) or self.s.category_for(name)
+            base = str(self.s.dir_for_category(cat)) if by_category else folder
+            it = self.m.new_item(e["link"], name, os.path.join(base, sub) if sub else base, cat, kind=KIND_TELEGRAM, size=e["size"],
                                  page_url=e["link"], description=" ".join((e["caption"] or "").split())[:300],
                                  headers={"tg_chat": str(e.get("chat_id") or ""), "tg_msg": str(e["id"])})
             self.m.add(it, start=False, queue=MAIN_QUEUE)

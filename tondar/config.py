@@ -33,6 +33,42 @@ DEFAULT_CATEGORIES = {
 }
 GENERAL = "General"
 
+# file types for the type filters (Download all links, Telegram)
+FILE_TYPES = [("video", "Video"), ("audio", "Audio"), ("image", "Images"), ("document", "Documents"),
+              ("compressed", "Compressed"), ("program", "Programs"), ("playlist", "Playlists"),
+              ("other", "Other")]
+IMAGE_EXTS = set("jpg jpeg png gif webp bmp tif tiff svg heic heif avif ico".split())
+_CAT_TYPE = {"Video": "video", "Music": "audio", "Documents": "document", "Compressed": "compressed",
+             "Programs": "program"}
+
+
+def file_type(name, mime="", categories=None):
+    """'video' | 'audio' | 'image' | 'document' | 'compressed' | 'program' | 'other'"""
+    ext = name.rsplit(".", 1)[-1].lower() if "." in (name or "") else ""
+    if ext in IMAGE_EXTS:
+        return "image"
+    for cat, exts in (categories or DEFAULT_CATEGORIES).items():
+        if ext and ext in exts:
+            return _CAT_TYPE.get(cat, "other")
+    mime = (mime or "").split(";")[0].strip().lower()
+    if mime.startswith("video/") or mime in ("application/x-mpegurl", "application/vnd.apple.mpegurl",
+                                             "application/dash+xml"):
+        return "video"
+    if mime.startswith("audio/"):
+        return "audio"
+    if mime.startswith("image/"):
+        return "image"
+    if mime in ("application/pdf", "application/msword", "application/epub+zip", "text/plain") or \
+            "officedocument" in mime or "opendocument" in mime:
+        return "document"
+    if mime in ("application/zip", "application/x-rar-compressed", "application/vnd.rar", "application/x-7z-compressed",
+                "application/gzip", "application/x-tar", "application/x-xz", "application/x-bzip2"):
+        return "compressed"
+    if mime in ("application/vnd.android.package-archive", "application/x-msdownload",
+                "application/vnd.debian.binary-package", "application/x-msi", "application/x-apple-diskimage"):
+        return "program"
+    return "other"
+
 DEFAULT_SETTINGS = {
     "max_connections": 8,            # per download (IDM default 8)
     "max_simultaneous": 3,           # downloads running at once in the main queue

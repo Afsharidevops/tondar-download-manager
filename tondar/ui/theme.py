@@ -63,6 +63,8 @@ QPushButton:hover {{ background: {hover}; }}
 QPushButton:default {{ background: {accent}; color: white; border-color: {accent}; }}
 QPushButton:default:hover {{ background: {accent}; }}
 QPushButton:disabled {{ color: {muted}; }}
+QPushButton#chip {{ border-radius: 11px; padding: 2px 12px; min-height: 18px; color: {muted}; background: {surface}; }}
+QPushButton#chip:checked {{ background: {accent_soft}; color: {accent}; border-color: {accent}; }}
 QToolButton {{ border-radius: 6px; padding: 3px 8px; }}
 
 QProgressBar {{ border: none; border-radius: 6px; background: {track}; }}

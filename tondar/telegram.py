@@ -318,14 +318,8 @@ def _media_facts(raw):
 
 
 def kind_of(name, mime):
-    ext = os.path.splitext(name)[1].lower()
-    if mime.startswith("video/") or ext in (".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v", ".ts"):
-        return "video"
-    if mime.startswith("audio/") or ext in (".mp3", ".m4a", ".ogg", ".flac", ".wav", ".opus", ".oga"):
-        return "audio"
-    if mime.startswith("image/") or ext in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
-        return "image"
-    return "file"
+    from .config import file_type
+    return file_type(name, mime)
 
 
 _GENERIC = re.compile(r"^(?:\d+|video|file|document|photo|audio|IMG|VID)?[\d_\- .()]*$", re.I)

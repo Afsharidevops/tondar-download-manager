@@ -26,6 +26,9 @@ n = tg.suggest_name("5771234.mp4", '🔥سریال " شمشیر و سکوت "\n\
 assert n == "سریال شمشیر و سکوت - Sword & Silence (2026).S01 - قسمت 2 (11).mp4", n
 assert tg.suggest_name("Sword.S01E02.mp4", "x", "video/mp4", 1) == "Sword.S01E02.mp4"
 assert tg.suggest_name("", "", "video/mp4", 7) == "telegram 7.mp4"
+from tondar.config import file_type as ft
+assert (ft("a.mkv"), ft("a.pdf"), ft("a.rar"), ft("a.apk"), ft("a.jpg"), ft("a.mp3"), ft("x", "video/mp4"), ft("x")) == \
+    ("video", "document", "compressed", "program", "image", "audio", "video", "other")
 print("parsing ok")
 
 shutil.copy(os.path.join(os.path.dirname(__file__), "fake_tdl.py"), tg.TDL_PATH) if tg.TDL_PATH.parent.mkdir(parents=True, exist_ok=True) is None else None
@@ -110,10 +113,17 @@ t0 = time.time()
 while time.time() - t0 < 10 and d.busy:
     app.processEvents(); time.sleep(0.05)
 app.processEvents()
-assert d.tree.topLevelItemCount() == 2, d.tree.topLevelItemCount()     # videos only
-d.kind.setCurrentIndex(2); app.processEvents()
-assert d.tree.topLevelItemCount() == 4
-d.kind.setCurrentIndex(0); app.processEvents()
+assert d.tree.topLevelItemCount() == 4, d.tree.topLevelItemCount()     # every file is listed
+assert d.types.counts == {"video": 2, "image": 1, "audio": 1}, d.types.counts
+d.grab().save(os.environ.get("TG_SHOT_ALL", "/tmp/telegram-dialog-all.png"))
+assert len(d._checked_rows()) == 2                                       # videos are checked
+visible = lambda: sum(1 for r in d._rows() if not r.isHidden())
+d.types.set_allowed({"image", "audio"}); app.processEvents()
+assert visible() == 2 and len(d._checked_rows()) == 0
+d.types.buttons["video"].setChecked(True); app.processEvents()
+assert visible() == 4
+d.types.set_allowed({"video"}); app.processEvents()
+assert visible() == 2
 shot = os.environ.get("TG_SHOT", "/tmp/telegram-dialog.png")
 d.grab().save(shot)
 n0 = len(m.items)
